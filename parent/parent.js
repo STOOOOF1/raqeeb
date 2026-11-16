@@ -85,6 +85,7 @@
     root.replaceChildren(h('div', { class: 'app' }, h('div', { class: 'top' }, chipsEl), mainEl, navEl));
     await reload();
     CK.subscribe(onChange);
+    if (localStorage.getItem('ck-push') === '1') enablePush(false).catch(() => {}); // تجديد الاشتراك بصمت
     setInterval(() => { if (S.tab === 'home') render(); }, 30000);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reload(); });
   }
@@ -117,12 +118,46 @@
   }
   const reloadSoon = CK.debounce(reload, 400);
 
+  // تنبيه داخل التطبيق؛ إشعار النظام يأتي من الخادم عبر Push (انظر sw.js)
   function notify(title, body) {
     CK.beep(); toast(title + (body ? ': ' + body : ''));
-    if (document.hidden && window.Notification && Notification.permission === 'granted') {
-      try { new Notification(title, { body, icon: 'icon.svg', lang: 'ar', dir: 'rtl' }); } catch { /* غير مدعوم */ }
-    }
   }
+
+  // ---------- إشعارات Push ----------
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const b64ToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+  // ask=true عند ضغط المستخدم الزر (يطلب الإذن)، و false للتجديد الصامت عند فتح التطبيق
+  async function enablePush(ask) {
+    if (!pushSupported()) { if (ask) throw new Error('هذا المتصفح لا يدعم الإشعارات. على الآيفون أضف التطبيق إلى الشاشة الرئيسية أولًا.'); return false; }
+    const reg = await navigator.serviceWorker.register('sw.js');
+    await navigator.serviceWorker.ready;
+    if (Notification.permission !== 'granted') {
+      if (!ask) return false;
+      if ((await Notification.requestPermission()) !== 'granted') throw new Error('لم يُسمح بالإشعارات من إعدادات المتصفح');
+    }
+    const r = await fetch(CONFIG.url + '/functions/v1/push', { method: 'POST', headers: { 'Content-Type': 'application/json', apikey: CONFIG.key }, body: JSON.stringify({ action: 'vapid' }) });
+    const { key } = await r.json();
+    if (!key) throw new Error('تعذر الاتصال بخادم الإشعارات');
+    const opts = { userVisibleOnly: true, applicationServerKey: b64ToBytes(key) };
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      try { sub = await reg.pushManager.subscribe(opts); }
+      catch (e) { throw new Error('تعذر الاشتراك في الإشعارات على هذا المتصفح'); }
+    }
+    const j = sub.toJSON();
+    await q(sb.rpc('save_push_sub', { p_endpoint: j.endpoint, p_p256dh: j.keys.p256dh, p_auth: j.keys.auth }));
+    localStorage.setItem('ck-push', '1');
+    return true;
+  }
+  async function disablePush() {
+    localStorage.removeItem('ck-push');
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
+      const sub = reg && await reg.pushManager.getSubscription();
+      if (sub) { await sb.from('push_subs').delete().eq('endpoint', sub.endpoint); await sub.unsubscribe(); }
+    } catch { /* لا اشتراك */ }
+  }
+  const pushOn = () => pushSupported() && Notification.permission === 'granted' && localStorage.getItem('ck-push') === '1';
 
   function onChange(p) {
     if (p.table === 'messages') {
@@ -579,10 +614,12 @@
             toast('تم تغيير الرقم السري');
           } });
         } }, 'تغيير الرقم السري'),
-        window.Notification && Notification.permission !== 'granted'
-          ? h('button', { class: 'btn ghost sm', onclick: async () => { const r = await Notification.requestPermission(); toast(r === 'granted' ? 'تم تفعيل الإشعارات' : 'لم يُسمح بالإشعارات'); render(); } }, '🔔 تفعيل الإشعارات') : null,
+        pushOn()
+          ? h('button', { class: 'btn plain sm', onclick: async () => { await disablePush(); toast('أُوقفت الإشعارات على هذا الجهاز'); render(); } }, '🔕 إيقاف الإشعارات')
+          : h('button', { class: 'btn sm', onclick: async () => { await run(() => enablePush(true), 'تم تفعيل الإشعارات على هذا الجهاز 🔔'); render(); } }, '🔔 تفعيل الإشعارات'),
         h('button', { class: 'btn plain sm', onclick: () => { sessionStorage.removeItem('ck-unlocked'); location.reload(); } }, 'قفل التطبيق'),
-        h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('تسجيل الخروج من هذا الجهاز؟')) { await sb.auth.signOut(); sessionStorage.clear(); location.reload(); } } }, 'تسجيل الخروج'))));
+        h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('تسجيل الخروج من هذا الجهاز؟')) { await disablePush(); await sb.auth.signOut(); sessionStorage.clear(); location.reload(); } } }, 'تسجيل الخروج')),
+      pushOn() ? null : h('p', { class: 'small muted' }, 'فعّل الإشعارات ليصلك تنبيه بالمهام والرسائل حتى والتطبيق مغلق. على الآيفون: أضف التطبيق إلى الشاشة الرئيسية أولًا ثم افتحه من أيقونته.')));
     return out;
   }
 
