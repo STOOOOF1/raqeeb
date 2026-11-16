@@ -1,0 +1,11 @@
+{
+  "name": "رقيب — تطبيق الوالدين",
+  "short_name": "رقيب",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f4f1ea",
+  "theme_color": "#0f766e",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
