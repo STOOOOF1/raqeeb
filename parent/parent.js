@@ -76,7 +76,7 @@
   // ================= الهيكل والبيانات =================
   let chipsEl, mainEl, navEl;
   const TABS = [['home', '🏠', 'الرئيسية'], ['schedule', '🕒', 'الأوقات'], ['apps', '📱', 'التطبيقات'],
-    ['tasks', '✅', 'المهام'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
+    ['tasks', '✅', 'المهام'], ['breaks', '💡', 'الفوائد'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
 
   async function start() {
     chipsEl = h('div', { class: 'chips' });
@@ -212,7 +212,7 @@
         h('button', { class: 'btn big', onclick: addChild }, '＋ إضافة طفل')));
       return;
     }
-    const view = { home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, settings: viewSettings }[S.tab];
+    const view = { home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, breaks: viewBreaks, settings: viewSettings }[S.tab];
     mainEl.replaceChildren(...view(c).filter(Boolean));
     mainEl.scrollTop = top;
   }
@@ -398,12 +398,11 @@
 
   // ================= المهام =================
   const TASK_TABS = [['main', 'الرئيسية', ['main']], ['extra', 'نصف ساعة', ['quran', 'matn', 'chore']],
-    ['quick', 'سريعة (ربع ساعة)', ['reading', 'puzzle']], ['breaks', 'الفواصل', []]];
+    ['quick', 'سريعة (ربع ساعة)', ['reading', 'puzzle']]];
   const TASK_HELP = {
     main: 'مهام يومية لا يُفتح الجهاز في وقته الرسمي حتى يُنجزها الطفل وتصلك للمتابعة.',
     extra: 'يسجّل الطفل صوته بالحفظ (أو يبلّغ بإنجاز المهمة المنزلية)، وبعد إجازتك يحصل على الوقت كاملًا مع فواصل قصيرة.',
     quick: 'تُصحَّح تلقائيًا: يقرأ ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
-    breaks: 'سؤال أو فائدة أو قصة قصيرة تظهر للطفل بين كل فترة لعب في أوقات المهام.',
   };
 
   // محرر أسئلة اختيار من متعدد
@@ -492,8 +491,8 @@
     });
   }
 
-  function breakDialog(b) {
-    const isNew = !b; b = b || { kind: 'fact', title: '', body: '', options: [], answer: 0 };
+  function breakDialog(b, defKind = 'fact') {
+    const isNew = !b; b = b || { kind: defKind, title: '', body: '', options: [], answer: 0 };
     const kind = h('select', {}, ...[['question', 'سؤال'], ['fact', 'فائدة'], ['story', 'قصة قصيرة']].map(([v, n]) => h('option', { value: v, selected: b.kind === v }, n)));
     const title = h('input', { type: 'text', value: b.title, maxlength: 60, placeholder: 'مثال: هل تعلم؟' });
     const bodyEl = h('textarea', { value: b.body });
@@ -502,7 +501,7 @@
     const optBox = h('div', { class: 'col' }, h('b', {}, 'الخيارات (حدد الصحيح)'), opts.map((o, j) => h('div', { class: 'row' }, radios[j], o)));
     const upd = () => optBox.classList.toggle('hidden', kind.value !== 'question');
     kind.onchange = upd; upd();
-    modal(isNew ? 'إضافة فاصل' : 'تعديل فاصل', [field('النوع', kind), field('العنوان', title), field('النص (يُقرأ في دقيقتين أو أقل)', bodyEl), optBox], {
+    modal(isNew ? 'إضافة' : 'تعديل', [field('النوع', kind), field('العنوان', title), field('النص (يُقرأ في دقيقتين أو أقل)', bodyEl), optBox], {
       onOk: async () => {
         const row = { kind: kind.value, title: title.value.trim(), body: bodyEl.value.trim(), options: [], answer: null };
         if (!row.body) throw new Error('اكتب النص');
@@ -518,6 +517,44 @@
     });
   }
 
+  // ================= الفوائد والفواصل =================
+  const BK = { question: ['❓', 'سؤال', 'الأسئلة'], fact: ['💡', 'فائدة', 'الفوائد'], story: ['📗', 'قصة', 'القصص'] };
+  function viewBreaks(c) {
+    const save = (patch) => run(async () => { await q(sb.from('children').update(patch).eq('id', c.id)); await reload(); }, 'تم الحفظ');
+    const num = (label, key, min, max) => h('div', { class: 'row between' }, h('span', { class: 'grow' }, label),
+      h('input', { type: 'number', min, max, value: c[key], style: 'width:90px', onchange: (e) => save({ [key]: Math.max(min, Math.min(max, +e.target.value || min)) }) }));
+    const f = S.breakFilter || 'all';
+    const items = S.d.breaks.filter((b) => f === 'all' || b.kind === f);
+    const count = (k) => S.d.breaks.filter((b) => b.kind === k).length;
+    return [
+      card('⏸ الفاصل عند ' + c.name,
+        h('p', { class: 'small muted' }, 'بعد كل مدة متواصلة من فتح الشاشة تسودّ الشاشة لراحة العينين، وفور انتهائها تظهر للطفل فائدة أو سؤال أو قصة مما تكتبه هنا.'),
+        h('div', { class: 'row between' }, h('span', { class: 'grow' }, 'نوع الفاصل'),
+          h('select', { onchange: (e) => save({ break_mode: e.target.value }) },
+            [['mix', 'راحة للعينين ثم فائدة'], ['eyes', 'راحة للعينين فقط'], ['content', 'فائدة أو سؤال أو قصة فقط'], ['off', 'بلا فواصل']]
+              .map(([v, t]) => h('option', { value: v, selected: c.break_mode === v }, t)))),
+        num('بعد كل (دقائق متواصلة)', 'break_interval_min', 5, 120),
+        num('مدة راحة العينين (ثوانٍ)', 'break_max_sec', 30, 600),
+        h('label', { class: 'switch' }, h('div', {}, 'الفواصل أثناء السماح المباشر مني', h('div', { class: 'small muted' }, 'تعمل دائمًا في الوقت الرسمي والوقت المكتسب.')),
+          h('input', { type: 'checkbox', checked: c.breaks_on_parent, onchange: (e) => save({ breaks_on_parent: e.target.checked }) }))),
+      card(`📚 مكتبة الفوائد (${S.d.breaks.length})`,
+        h('p', { class: 'small muted' }, 'مشتركة بين كل أطفالك، وتظهر بترتيب عشوائي. أوقف أي عنصر بإزالة علامته دون حذفه.'),
+        h('div', { class: 'row wrap' }, Object.entries(BK).map(([k, [ic, name]]) => h('button', { class: 'btn sm', onclick: () => breakDialog(null, k) }, `＋ ${ic} ${name}`))),
+        h('div', { class: 'chips' }, [['all', `الكل (${S.d.breaks.length})`], ...Object.entries(BK).map(([k, [, , pl]]) => [k, `${pl} (${count(k)})`])]
+          .map(([k, t]) => h('button', { class: 'chip' + (f === k ? ' on' : ''), onclick: () => { S.breakFilter = k; render(); } }, t))),
+        items.length ? items.map((b) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, BK[b.kind][0]),
+          h('div', { class: 'grow' }, h('b', {}, b.title || BK[b.kind][1]), h('div', { class: 'small muted', style: 'max-height:3.2em;overflow:hidden' }, b.body)),
+          h('input', { type: 'checkbox', checked: b.active, title: 'مفعّلة', style: 'width:22px;height:22px;accent-color:var(--pri)',
+            onchange: (e) => run(() => q(sb.from('break_items').update({ active: e.target.checked }).eq('id', b.id))) }),
+          h('button', { class: 'iconbtn', onclick: () => breakDialog(b) }, '✏️'),
+          h('button', { class: 'iconbtn', onclick: async () => { if (await confirmBox('حذف هذا العنصر نهائيًا؟', 'حذف')) run(async () => { await q(sb.from('break_items').delete().eq('id', b.id)); await reload(); }); } }, '🗑')))
+          : h('p', { class: 'muted small' }, 'لا يوجد شيء هنا بعد.'),
+        S.d.breaks.length ? null : h('button', { class: 'btn ghost', onclick: () => run(async () => {
+          await q(sb.from('break_items').insert(SAMPLES.breaks.map((b) => ({ options: [], answer: null, ...b, family_id: S.me.family_id })))); await reload();
+        }, 'أضيفت النماذج') }, 'إضافة نماذج جاهزة')),
+    ];
+  }
+
   function viewTasks(c) {
     const [, , kinds] = TASK_TABS.find((x) => x[0] === S.taskTab);
     const out = [h('div', { class: 'chips' }, TASK_TABS.map(([id, name]) => h('button', { class: 'chip' + (S.taskTab === id ? ' on' : ''), onclick: () => { S.taskTab = id; render(); } }, name))),
@@ -526,13 +563,6 @@
     const toggle = (table, r) => h('input', { type: 'checkbox', checked: r.active, title: 'مفعّلة', style: 'width:22px;height:22px;accent-color:var(--pri)',
       onchange: (e) => run(() => q(sb.from(table).update({ active: e.target.checked }).eq('id', r.id))) });
 
-    if (S.taskTab === 'breaks') {
-      out.push(card(null, h('button', { class: 'btn', onclick: () => breakDialog() }, '＋ إضافة فاصل'),
-        S.d.breaks.map((b) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, { question: '❓', fact: '💡', story: '📗' }[b.kind]),
-          h('div', { class: 'grow' }, h('b', {}, b.title || { question: 'سؤال', fact: 'فائدة', story: 'قصة' }[b.kind]), h('div', { class: 'small muted', style: 'max-height:3.2em;overflow:hidden' }, b.body)),
-          toggle('break_items', b), h('button', { class: 'iconbtn', onclick: () => breakDialog(b) }, '✏️'), h('button', { class: 'iconbtn', onclick: del('break_items', b.id) }, '🗑')))));
-      return out;
-    }
     for (const kind of kinds) {
       const rows = mine(S.d.tasks, c).filter((t) => t.kind === kind);
       out.push(h('div', { class: 'card' },
@@ -619,14 +649,6 @@
         h('h2', { style: 'margin-top:8px' }, '⏰ وقت الاستخدام اليومي'),
         num('الحد الأعلى للاستخدام يوميًا (دقائق، 0 = بلا حد)', 'max_daily_min', 0, 1440),
         h('p', { class: 'small muted' }, `الحالي: ${c.max_daily_min ? hmin(c.max_daily_min) + ' ساعة' : 'بلا حد'}. عند بلوغه يُقفل الجهاز ويصلك تنبيه أحمر، ويبقى السماح المباشر منك ممكنًا.`),
-        h('h2', { style: 'margin-top:8px' }, '⏸ الفواصل أثناء الاستخدام'),
-        h('div', { class: 'row between' }, h('span', { class: 'grow' }, 'نوع الفاصل'),
-          h('select', { onchange: (e) => save({ break_mode: e.target.value }, 'تم الحفظ') },
-            [['mix', 'فائدة ثم راحة للعينين'], ['content', 'فائدة أو سؤال أو قصة فقط'], ['eyes', 'راحة للعينين فقط'], ['off', 'بلا فواصل']]
-              .map(([v, t]) => h('option', { value: v, selected: c.break_mode === v }, t)))),
-        num('فاصل بعد كل (دقائق استخدام)', 'break_interval_min', 5, 120),
-        num('مدة الفاصل (ثوانٍ)', 'break_max_sec', 30, 600),
-        sw('الفواصل أثناء السماح المباشر مني', 'breaks_on_parent', 'تعمل دائمًا في الوقت الرسمي والوقت المكتسب.'),
         h('div', { class: 'row wrap' },
           h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('إضافة المحتوى التمثيلي لهذا الطفل؟')) run(async () => { await insertSamples(c); await reload(); }, 'أضيف المحتوى'); } }, 'إضافة محتوى تمثيلي'),
           h('button', { class: 'btn bad sm', onclick: async () => {

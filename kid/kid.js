@@ -16,6 +16,8 @@
     wifi: () => B && B.openWifi(),
     toast: (t) => B && B.toast(t),
     info: () => { try { return B ? JSON.parse(B.info()) : { preview: true }; } catch { return {}; } },
+    // حالة الشاشة من النظام: {on, off: مجموع مدة الإطفاء, boot}
+    screen: () => { try { return B && B.screen ? JSON.parse(B.screen()) : null; } catch { return null; } },
   };
 
   const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
@@ -30,8 +32,9 @@
     raw: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
     d: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
     ops: load('ck-ops', []),
-    // عدّاد الاستخدام: used = اليوم، since = منذ آخر فاصل، rest = مدة القفل المتصل
-    U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, open: false, lim: 0, warned: '' },
+    // عدّاد وقت الشاشة: used = اليوم، since = المتواصل منذ آخر راحة، rest = مدة الإطفاء المتصل
+    U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, off: null, warned: '' },
+    resting: false, stab: {},
     lastReason: undefined, // undefined = أول نبضة بعد فتح التطبيق
     yt: { chan: null, feeds: {} },
   };
@@ -201,20 +204,29 @@
   };
 
   // ================= النبض: حساب الحالة وتطبيق القفل =================
-  // يُحسب وقت الاستخدام من آخر حالة معروفة، فيصح حتى لو توقفت الواجهة والطفل في تطبيق آخر
+  // العدّاد يحسب كل وقت تكون فيه الشاشة مفتوحة (مقفلًا كان الجهاز أو مفتوحًا، وحتى أثناء الفوائد)،
+  // ولا يحسب إطفاء الشاشة ولا راحة العينين. مدة الإطفاء تأتي من النظام فتصح حتى لو توقفت الواجهة.
   function track(t, day) {
-    const U = S.U, c = S.d.child;
+    const U = S.U, sc = N.screen(), restMs = (S.d.child.break_max_sec || 120) * 1000;
     if (U.day !== day) { U.day = day; U.used = 0; }
-    if (U.t && t > U.t) {
-      if (U.open) {
-        const end = Math.min(t, U.lim || t);
-        U.used += Math.max(0, end - U.t); U.since += Math.max(0, end - U.t);
-        U.rest = t - end;
-      } else U.rest += t - U.t;
-      if (U.rest >= (c.break_max_sec || 120) * 1000) U.since = 0; // قفلٌ بطول الفاصل يكفي راحةً
+    const gap = U.t ? t - U.t : 0;
+    let on = 0, off = 0;
+    if (gap > 0) {
+      if (sc) {
+        if (U.off == null || sc.boot + S.offset > U.t + 5000) off = gap; // أُعيد تشغيل الجهاز: ما سبق غير معلوم
+        else { off = Math.min(gap, Math.max(0, sc.off - U.off)); on = gap - off; }
+      } else if (gap < 5000 && !document.hidden) on = gap; // معاينة المتصفح
+      else off = gap;
     }
-    U.t = t;
+    if (S.resting) on = 0;
+    U.used += on; U.since += on;
+    if (off >= restMs) U.since = 0; // إطفاء بطول الفاصل يكفي راحةً للعينين
+    else if (off > 0 && on < 1500) { U.rest += off; if (U.rest >= restMs) U.since = 0; }
+    else if (on > 0) U.rest = 0;
+    U.t = t; U.off = sc ? sc.off : null;
   }
+  // يثبّت المواعيد المرسلة للنظام فلا تتغير كل ثانية والشاشة مطفأة
+  const snap = (k, v) => { if (v && S.stab[k] && Math.abs(v - S.stab[k]) < 4000) return S.stab[k]; S.stab[k] = v; return v; };
 
   function tick(force) {
     if (!S.d.child) return;
@@ -222,15 +234,16 @@
     track(tm, day);
     const st = CK.computeState({ ...S.d, usedMs: S.U.used }, t);
     S.st = st;
-    // فاصل كل N دقيقة من الاستخدام الفعلي، على أي وقت مفتوح
-    if (st.unlocked && c.break_mode !== 'off' && c.break_interval_min > 0 && (st.why !== 'parent' || c.breaks_on_parent)) {
-      const at = tm + c.break_interval_min * 60000 - S.U.since;
-      if (at < st.until - 60000) st.breakAt = at;
+    if (st.capped) st.until = snap('until', st.until);
+    // راحة للعينين بعد كل N دقيقة متواصلة من فتح الشاشة، على أي وقت مفتوح
+    let breakDue = false;
+    if (st.unlocked && c.break_mode !== 'off' && c.break_interval_min > 0 && (st.why !== 'parent' || c.breaks_on_parent) && st.until - tm > 60000) {
+      const left = c.break_interval_min * 60000 - S.U.since;
+      breakDue = left <= 0;
+      if (tm + left < st.until - 60000) st.breakAt = snap('breakAt', tm + Math.max(0, left));
     }
-    const breakDue = st.unlocked && st.breakAt && tm >= st.breakAt;
     if (breakDue && !S.breakOpen) openBreak(st.endGrant);
     const open = st.unlocked && !S.breakOpen && !breakDue;
-    S.U.open = open; S.U.lim = open ? Math.min(st.until, st.breakAt || st.until) : 0;
     save('ck-usage', S.U);
     capAlerts(st, tm, day);
     const kiosk = S.d.child.kiosk_enabled;
@@ -501,59 +514,65 @@
   }
 
   // ================= الفاصل =================
-  // الفاصل: فائدة أو سؤال أو قصة، ثم راحة للعينين حتى تكتمل مدته (حسب إعداد الوالدين)
+  // الفاصل: شاشة سوداء لراحة العينين أولًا، وفور انتهاء مدتها تظهر الفائدة أو السؤال أو القصة
   function openBreak(grant) {
     S.breakOpen = true;
     const c = S.d.child, mode = c.break_mode, total = c.break_max_sec || 120;
     const t0 = Date.now();
-    const elapsed = () => Math.round((Date.now() - t0) / 1000);
+    let rested = 0;
     const finish = () => {
-      const secs = Math.min(elapsed(), total);
+      S.resting = false;
       S.U.since = 0; S.U.rest = 0; save('ck-usage', S.U);
       S.breakOpen = false; closeOverlay();
-      if (grant && secs > 0) pushOp({ type: 'break', grant: grant.id, secs }); // تعويض مدة الفاصل
+      if (grant && rested > 0) pushOp({ type: 'break', grant: grant.id, secs: rested }); // تعويض مدة الراحة
       else tick(true);
     };
-    CK.beep(); N.toast('⏸ استراحة قصيرة');
     const last = localStorage.getItem('ck-last-break');
     const pool = S.d.breaks.filter((b) => b.id !== last);
     const item = mode === 'eyes' ? null : CK.shuffle(pool.length ? pool : S.d.breaks)[0];
-    const eyes = () => {
-      const left0 = mode === 'mix' || !item ? total - elapsed() : 0;
-      if (left0 < 10) return finish();
-      const body = openOverlay('👀 راحة للعينين', 'break');
-      let left = left0;
-      const num = h('div', { class: 'big center', style: 'font-size:56px' }, CK.countdown(left * 1000));
-      const back = h('button', { class: 'btn big block', disabled: true }, 'انتظر حتى ينتهي العد');
-      const timer = setInterval(() => {
-        left = left0 - (elapsed() - (total - left0)); num.textContent = CK.countdown(Math.max(0, left) * 1000);
-        if (left <= 0) { clearInterval(timer); back.disabled = false; back.textContent = '🎮 العودة للعب'; CK.beep(); }
-      }, 1000);
+
+    const content = () => {
+      S.resting = false;
+      if (!item) return finish();
+      localStorage.setItem('ck-last-break', item.id);
+      const body = openOverlay({ question: '❓ سؤال سريع', fact: '💡 فائدة', story: '📗 قصة قصيرة' }[item.kind], 'break');
+      let answered = item.kind !== 'question', left = 15;
+      const back = h('button', { class: 'btn big block', disabled: true }, '');
+      const upd = () => { back.disabled = left > 0 || !answered; back.textContent = left > 0 ? `اقرأ بتمعّن… ${left}` : answered ? '🎮 العودة للعب' : 'أجب عن السؤال أولًا'; };
+      const timer = setInterval(() => { left--; upd(); if (left <= 0) clearInterval(timer); }, 1000);
       back.onclick = () => { clearInterval(timer); finish(); };
-      body.append(h('div', { class: 'card center' }, h('div', { class: 'logo' }, '🌳'),
-        h('h2', {}, 'أرِح عينيك قليلًا'),
-        h('p', { class: 'reading' }, 'ضع الجهاز جانبًا، وانظر إلى شيء بعيد كالنافذة أو آخر الغرفة، ورمّش عينيك عدة مرات. يمكنك أن تقوم وتتحرك قليلًا.'),
-        num), back);
-    };
-    if (!item) return eyes();
-    localStorage.setItem('ck-last-break', item.id);
-    const body = openOverlay({ question: '❓ سؤال سريع', fact: '💡 فائدة', story: '📗 قصة قصيرة' }[item.kind], 'break');
-    let answered = item.kind !== 'question', left = 15;
-    const next = mode === 'mix' ? '👀 التالي: راحة للعينين' : '🎮 العودة للعب';
-    const back = h('button', { class: 'btn big block', disabled: true }, '');
-    const upd = () => { back.disabled = left > 0 || !answered; back.textContent = left > 0 ? `اقرأ بتمعّن… ${left}` : answered ? next : 'أجب عن السؤال أولًا'; };
-    const timer = setInterval(() => { left--; upd(); if (left <= 0) clearInterval(timer); }, 1000);
-    back.onclick = () => { clearInterval(timer); eyes(); };
-    const result = h('p', { class: 'center' });
-    const opts = (item.options || []).map((o, i) => h('button', { class: 'opt', onclick: () => {
-      if (answered) return;
-      answered = true;
-      opts[i].classList.add(i === item.answer ? 'good' : 'wrong'); opts[item.answer]?.classList.add('good');
-      result.textContent = i === item.answer ? 'إجابة صحيحة، أحسنت! 🌟' : 'الإجابة الصحيحة مظللة بالأخضر';
+      const result = h('p', { class: 'center' });
+      const opts = (item.options || []).map((o, i) => h('button', { class: 'opt', onclick: () => {
+        if (answered) return;
+        answered = true;
+        opts[i].classList.add(i === item.answer ? 'good' : 'wrong'); opts[item.answer]?.classList.add('good');
+        result.textContent = i === item.answer ? 'إجابة صحيحة، أحسنت! 🌟' : 'الإجابة الصحيحة مظللة بالأخضر';
+        upd();
+      } }, o));
+      body.append(h('div', { class: 'card' }, item.title ? h('h2', {}, item.title) : null, h('div', { class: 'reading' }, item.body), opts, result), back);
       upd();
-    } }, o));
-    body.append(h('div', { class: 'card' }, item.title ? h('h2', {}, item.title) : null, h('div', { class: 'reading' }, item.body), opts, result), back);
-    upd();
+    };
+
+    if (mode === 'content') { CK.beep(); N.toast('⏸ استراحة قصيرة'); return content(); }
+    // ---- راحة العينين: شاشة سوداء وتعليمات تتبدل ----
+    S.resting = true; // لا تُحسب من وقت الشاشة
+    CK.beep(); N.toast('👀 وقت راحة العينين');
+    const STEPS = ['انظر إلى السقف ⬆️', 'انظر إلى اليمين ➡️', 'انظر إلى اليسار ⬅️', 'انظر إلى أبعد شيء في الغرفة 🪟', 'أغمض عينيك وخذ نفسًا عميقًا 😌', 'رمّش بعينيك عدة مرات ✨'];
+    const body = openOverlay('', 'break');
+    S.overlay.style.background = '#000'; S.overlay.style.color = '#fff';
+    const step = h('div', { style: 'font-size:2rem;font-weight:800;text-align:center;line-height:1.6' }, STEPS[0]);
+    const num = h('div', { style: 'font-size:1.4rem;text-align:center;opacity:.55' }, CK.countdown(total * 1000));
+    body.style.cssText = 'flex:1;justify-content:center;gap:28px';
+    body.append(h('div', { style: 'text-align:center;opacity:.7' }, '👀 راحة للعينين — أبعد الجهاز عن وجهك'), step, num);
+    const timer = setInterval(() => {
+      const el = Math.round((Date.now() - t0) / 1000);
+      step.textContent = STEPS[Math.floor(el / 8) % STEPS.length];
+      num.textContent = CK.countdown(Math.max(0, total - el) * 1000);
+      if (el < total) return;
+      clearInterval(timer); rested = total;
+      CK.beep();
+      content();
+    }, 1000);
   }
 
   // ================= يوتيوب =================
