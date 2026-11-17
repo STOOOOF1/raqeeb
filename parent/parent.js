@@ -108,6 +108,7 @@
         q(sb.from('messages').select('child_id').eq('sender', 'child').is('read_at', null)),
       ]);
       S.family = family; S.children = children;
+      children.forEach(capAlert);
       if (!cur()) { S.cur = children[0]?.id || null; }
       const apps = S.cur ? await q(sb.from('apps').select('*').eq('child_id', S.cur).order('label')) : [];
       S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks };
@@ -223,10 +224,33 @@
     if (st.unlocked) {
       cls = 'ok';
       text = `مفتوح حتى ${clock(st.until)} · ` + { parent: 'بإذن مباشر', schedule: 'الوقت الرسمي', task: 'وقت مكتسب بمهمة' }[st.why];
-    } else if (st.reason === 'force') text = 'مقفل يدويًا من الوالدين';
+    } else if (st.reason === 'cap') text = 'مقفل · بلغ الحد اليومي للاستخدام';
+    else if (st.reason === 'force') text = 'مقفل يدويًا من الوالدين';
     else if (st.reason === 'main') text = 'مقفل · بانتظار إنجاز المهام الرئيسية';
     else text = 'مقفل · خارج الأوقات المسموحة' + (st.nextWindow ? ` (يفتح ${clock(st.nextWindow.s)})` : '');
     return { st, text, cls };
+  }
+
+  // استخدام اليوم مقابل الحد اليومي، وتنبيه أحمر عند بلوغه
+  const hmin = (m) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+  function usageBox(c) {
+    if (!c.paired_at) return null;
+    const used = Math.floor(CK.usedToday({ child: c }) / 60000), cap = c.max_daily_min;
+    if (!cap) return h('div', { class: 'small muted' }, `الاستخدام اليوم: ${hmin(used)} (بلا حد يومي)`);
+    const pct = Math.min(100, Math.round((used / cap) * 100)), over = used >= cap;
+    return h('div', { class: over ? 'card bad' : 'col', style: 'gap:6px' },
+      over ? h('b', {}, `🔴 بلغ ${c.name} الحد اليومي (${hmin(cap)} ساعة)`) : null,
+      h('div', { class: 'row between small' }, h('span', {}, 'الاستخدام اليوم'), h('b', {}, `${hmin(used)} من ${hmin(cap)}`)),
+      h('div', { style: 'height:8px;border-radius:4px;background:rgba(0,0,0,.1);overflow:hidden' },
+        h('div', { style: `height:100%;width:${pct}%;background:${over || pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#0f766e'}` })),
+      over ? h('div', { class: 'small' }, 'أُقفل جهازه حتى الغد. السماح المباشر منك يتجاوز هذا الحد.') : null);
+  }
+  function capAlert(c) {
+    if (!c.max_daily_min || c.usage_alert_day !== CK.dayStr()) return;
+    const k = 'ck-cap-' + c.id;
+    if (localStorage.getItem(k) === c.usage_alert_day) return;
+    localStorage.setItem(k, c.usage_alert_day);
+    notify(`🔴 ${c.name} بلغ الحد اليومي`, `استعمل الجهاز ${hmin(c.max_daily_min)} ساعة اليوم، وأُقفل حتى الغد.`);
   }
 
   async function allow(c, minutes) {
@@ -252,6 +276,7 @@
       h('div', { class: 'row' }, h('div', { class: 'avatar' }, '🧒'),
         h('div', { class: 'grow' }, h('h2', {}, c.name), h('div', { class: 'small muted' }, c.paired_at ? CK.ago(c.last_seen) : 'الجهاز غير مرتبط بعد — انظر الإعدادات'))),
       h('div', {}, h('span', { class: 'tag ' + cls }, text)),
+      usageBox(c),
       c.paired_at && c.device_info?.native && !c.device_info.owner
         ? h('div', { class: 'card bad' }, h('p', { class: 'small' }, '⚠️ جهاز الطفل غير مؤمَّن: لم يُفعَّل وضع «مالك الجهاز»، فيستطيع الطفل الخروج من التطبيق. راجع خطوات التفعيل في ملف التعليمات.')) : null,
       c.paired_at && c.device_info?.preview
@@ -591,7 +616,17 @@
         sw('وضع القفل الكامل على الجهاز', 'kiosk_enabled', 'أوقفه مؤقتًا إذا أردت استخدام جهاز الطفل بحرية أو تثبيت تطبيقات.'),
         num('حد المهام السريعة يوميًا', 'max_quick_per_day', 0, 20),
         num('حد مهام النصف ساعة يوميًا', 'max_extra_per_day', 0, 20),
-        num('الفاصل بين الفوائد (دقائق)', 'break_interval_min', 3, 60),
+        h('h2', { style: 'margin-top:8px' }, '⏰ وقت الاستخدام اليومي'),
+        num('الحد الأعلى للاستخدام يوميًا (دقائق، 0 = بلا حد)', 'max_daily_min', 0, 1440),
+        h('p', { class: 'small muted' }, `الحالي: ${c.max_daily_min ? hmin(c.max_daily_min) + ' ساعة' : 'بلا حد'}. عند بلوغه يُقفل الجهاز ويصلك تنبيه أحمر، ويبقى السماح المباشر منك ممكنًا.`),
+        h('h2', { style: 'margin-top:8px' }, '⏸ الفواصل أثناء الاستخدام'),
+        h('div', { class: 'row between' }, h('span', { class: 'grow' }, 'نوع الفاصل'),
+          h('select', { onchange: (e) => save({ break_mode: e.target.value }, 'تم الحفظ') },
+            [['mix', 'فائدة ثم راحة للعينين'], ['content', 'فائدة أو سؤال أو قصة فقط'], ['eyes', 'راحة للعينين فقط'], ['off', 'بلا فواصل']]
+              .map(([v, t]) => h('option', { value: v, selected: c.break_mode === v }, t)))),
+        num('فاصل بعد كل (دقائق استخدام)', 'break_interval_min', 5, 120),
+        num('مدة الفاصل (ثوانٍ)', 'break_max_sec', 30, 600),
+        sw('الفواصل أثناء السماح المباشر مني', 'breaks_on_parent', 'تعمل دائمًا في الوقت الرسمي والوقت المكتسب.'),
         h('div', { class: 'row wrap' },
           h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('إضافة المحتوى التمثيلي لهذا الطفل؟')) run(async () => { await insertSamples(c); await reload(); }, 'أضيف المحتوى'); } }, 'إضافة محتوى تمثيلي'),
           h('button', { class: 'btn bad sm', onclick: async () => {

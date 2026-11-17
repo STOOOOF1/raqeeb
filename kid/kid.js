@@ -18,20 +18,76 @@
     info: () => { try { return B ? JSON.parse(B.info()) : { preview: true }; } catch { return {}; } },
   };
 
+  const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
+  const save = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* التخزين ممتلئ */ } };
+  const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => { const r = Math.random() * 16 | 0; return (ch === 'x' ? r : (r & 3 | 8)).toString(16); }));
+  const iso = (ms) => new Date(ms).toISOString();
+
   const S = {
     me: null, tab: 'home', offset: 0, st: null, sig: '', chat: null, unread: 0, breakOpen: false, overlay: null,
+    // raw: آخر بيانات من الخادم — d: نفسها بعد تطبيق العمليات التي لم تُزامن بعد
+    raw: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
     d: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
+    ops: load('ck-ops', []),
+    // عدّاد الاستخدام: used = اليوم، since = منذ آخر فاصل، rest = مدة القفل المتصل
+    U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, open: false, lim: 0, warned: '' },
+    lastReason: undefined, // undefined = أول نبضة بعد فتح التطبيق
     yt: { chan: null, feeds: {} },
   };
   const now = () => new Date(Date.now() + S.offset);
   const today = () => CK.dayStr(now());
+
+  // ================= العمليات المؤجلة: تُطبَّق فورًا على الجهاز ثم تُرسل للخادم متى توفر الاتصال =================
+  function applyOps() {
+    const raw = S.raw;
+    const d = { ...raw, subs: [...raw.subs], grants: raw.grants.map((g) => ({ ...g })) };
+    for (const op of S.ops) {
+      if (op.type === 'quick') {
+        if (d.grants.some((g) => g.id === op.id) || op.rejected) continue;
+        d.subs.unshift({ id: op.id, task_id: op.task, kind: op.kind, day: op.day, status: 'approved' });
+        d.grants.push({ id: op.id, source: 'quick', status: 'active', title: op.title, task_id: op.task, minutes: op.minutes,
+          starts_at: op.start, ends_at: op.end, breaks_done: 0 });
+      } else if (op.type === 'start') {
+        const g = d.grants.find((x) => x.id === op.grant);
+        if (g && g.status === 'ready' && !op.rejected) Object.assign(g, { status: 'active', starts_at: op.start, ends_at: op.end });
+      } else if (op.type === 'break' && !op.rejected) { // يُحذف عند أول تحميل بعد إرساله فيصبح من بيانات الخادم
+        const g = d.grants.find((x) => x.id === op.grant);
+        if (g && g.ends_at) g.ends_at = iso(new Date(g.ends_at).getTime() + op.secs * 1000);
+      }
+    }
+    S.d = d;
+  }
+  const pushOp = (op) => { S.ops.push({ id: uuid(), ...op }); save('ck-ops', S.ops); applyOps(); tick(true); flush().then(reloadSoon); };
+
+  let flushing = null;
+  function flush() {
+    if (flushing) return flushing;
+    flushing = (async () => {
+      for (const op of S.ops.filter((o) => !o.sentAt)) {
+        const r = op.type === 'quick' ? await sb.rpc('claim_quick', { p_task: op.task, p_day: op.day, p_id: op.id, p_start: op.start })
+          : op.type === 'start' ? await sb.rpc('start_grant', { p_id: op.grant, p_start: op.start })
+            : await sb.rpc('break_done', { p_id: op.grant, p_secs: op.secs, p_op: op.id });
+        if (r.error && !r.error.code) break; // لا اتصال: نعيد المحاولة لاحقًا
+        if (r.error) { op.rejected = true; toast('لم يُعتمد: ' + r.error.message); } // رفضه الخادم (كتجاوز الحد اليومي)
+        op.sentAt = Date.now();
+      }
+      save('ck-ops', S.ops);
+    })().catch(() => {}).finally(() => { flushing = null; });
+    return flushing;
+  }
+  // بداية الوقت الجديد: بعد نهاية آخر وقت جارٍ (تتسلسل الأوقات)
+  function nextStart() {
+    const t = now().getTime();
+    return Math.max(t, ...S.d.grants.filter((g) => g.status === 'active' && g.ends_at).map((g) => new Date(g.ends_at).getTime()));
+  }
 
   // ================= الربط =================
   async function boot() {
     try { S.me = await CK.me(); } catch (e) {
       // بلا اتصال: نعمل من النسخة المحفوظة إن وجدت
       const cache = localStorage.getItem('ck-kid-cache');
-      if (cache) { const c = JSON.parse(cache); S.me = c.me; S.d = c.d; return start(true); }
+      if (cache) { const c = JSON.parse(cache); S.me = c.me; S.raw = c.d; applyOps(); return start(true); }
     }
     if (!S.me || S.me.role !== 'child') return pairScreen();
     start(false);
@@ -75,6 +131,8 @@
 
   async function reload() {
     try {
+      await flush();
+      const fetchedAt = Date.now();
       const cid = S.me.child_id, since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
       const [srv, child, schedules, apps, yt, tasks, subs, grants, breaks, unread] = await Promise.all([
         q(sb.rpc('server_now')),
@@ -93,9 +151,12 @@
       }
       S.offset = new Date(srv).getTime() - Date.now();
       if (Math.abs(S.offset) < 5000) S.offset = 0;
-      S.d = { child, schedules, apps, yt, tasks, subs, grants, breaks };
+      S.raw = { child, schedules, apps, yt, tasks, subs, grants, breaks };
+      // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
+      S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
+      applyOps();
       if (S.tab !== 'chat') S.unread = unread.length;
-      try { localStorage.setItem('ck-kid-cache', JSON.stringify({ me: S.me, d: S.d })); } catch { /* التخزين ممتلئ */ }
+      save('ck-kid-cache', { me: S.me, d: S.raw });
       tick(true);
     } catch (e) { console.error(e); }
   }
@@ -122,7 +183,8 @@
     reloadSoon();
   }
 
-  const heartbeat = () => sb.rpc('heartbeat', { p_info: N.info() }).then(() => {}, () => {});
+  const reportUsage = () => S.U.day && sb.rpc('report_usage', { p_day: S.U.day, p_secs: Math.floor(S.U.used / 1000) }).then(() => {}, () => {});
+  const heartbeat = () => { reportUsage(); sb.rpc('heartbeat', { p_info: N.info() }).then(() => {}, () => {}); };
   // تُرسل قائمة التطبيقات فقط إذا تغيّرت (تثبيت أو حذف تطبيق)
   const reportApps = async () => {
     const apps = N.apps(); if (!apps.length) return;
@@ -139,13 +201,38 @@
   };
 
   // ================= النبض: حساب الحالة وتطبيق القفل =================
+  // يُحسب وقت الاستخدام من آخر حالة معروفة، فيصح حتى لو توقفت الواجهة والطفل في تطبيق آخر
+  function track(t, day) {
+    const U = S.U, c = S.d.child;
+    if (U.day !== day) { U.day = day; U.used = 0; }
+    if (U.t && t > U.t) {
+      if (U.open) {
+        const end = Math.min(t, U.lim || t);
+        U.used += Math.max(0, end - U.t); U.since += Math.max(0, end - U.t);
+        U.rest = t - end;
+      } else U.rest += t - U.t;
+      if (U.rest >= (c.break_max_sec || 120) * 1000) U.since = 0; // قفلٌ بطول الفاصل يكفي راحةً
+    }
+    U.t = t;
+  }
+
   function tick(force) {
     if (!S.d.child) return;
-    const t = now(), st = CK.computeState(S.d, t);
+    const c = S.d.child, t = now(), tm = t.getTime(), day = today();
+    track(tm, day);
+    const st = CK.computeState({ ...S.d, usedMs: S.U.used }, t);
     S.st = st;
-    const breakDue = st.unlocked && st.breakAt && t.getTime() >= st.breakAt;
-    if (breakDue && !S.breakOpen) openBreak(st.breakGrant);
+    // فاصل كل N دقيقة من الاستخدام الفعلي، على أي وقت مفتوح
+    if (st.unlocked && c.break_mode !== 'off' && c.break_interval_min > 0 && (st.why !== 'parent' || c.breaks_on_parent)) {
+      const at = tm + c.break_interval_min * 60000 - S.U.since;
+      if (at < st.until - 60000) st.breakAt = at;
+    }
+    const breakDue = st.unlocked && st.breakAt && tm >= st.breakAt;
+    if (breakDue && !S.breakOpen) openBreak(st.endGrant);
     const open = st.unlocked && !S.breakOpen && !breakDue;
+    S.U.open = open; S.U.lim = open ? Math.min(st.until, st.breakAt || st.until) : 0;
+    save('ck-usage', S.U);
+    capAlerts(st, tm, day);
     const kiosk = S.d.child.kiosk_enabled;
     const sig = [open, st.until, st.breakAt, st.reason, st.mainsOk, kiosk, S.d.apps.map((a) => a.package).join()].join('|');
     drawHero(st, t);
@@ -159,13 +246,35 @@
     }
   }
 
+  const capText = (m) => (m % 60 ? `${m} دقيقة` : m === 60 ? 'ساعة' : m === 120 ? 'ساعتان' : `${m / 60} ساعات`);
+  function capAlerts(st, tm, day) {
+    const c = S.d.child, U = S.U;
+    if (st.reason === 'cap' && S.lastReason !== 'cap') reportUsage(); // ليصل التنبيه للوالدين فورًا
+    if (st.reason === 'cap' && S.lastReason !== 'cap' && S.lastReason !== undefined) {
+      CK.beep(); N.toast('⏰ انتهى وقت استخدامك لهذا اليوم');
+      const body = openOverlay('⏰ انتهى وقتك اليوم');
+      body.append(h('div', { class: 'card center' }, h('div', { class: 'logo' }, '🌙'),
+        h('h2', {}, `استخدمت الجهاز ${capText(c.max_daily_min)} اليوم`),
+        h('p', {}, 'هذا هو الحد اليومي. أُبلغ والداك، ويُفتح الجهاز غدًا بإذن الله.'),
+        h('p', { class: 'muted small' }, 'يمكنك مراسلة والديك من تبويب المحادثة.')),
+      h('button', { class: 'btn big block', onclick: closeOverlay }, 'حسنًا'));
+    }
+    if (st.capped && st.until - tm <= 10 * 60000 && U.warned !== day) {
+      U.warned = day; save('ck-usage', U);
+      CK.beep(); toast('⏳ بقيت 10 دقائق من وقتك اليومي'); N.toast('⏳ بقيت 10 دقائق من وقتك اليومي');
+    }
+    S.lastReason = st.reason;
+  }
+
   function drawHero(st, t) {
     const c = S.d.child;
     let line, big = '';
     if (st.unlocked) {
-      line = { parent: 'سمح لك والداك 🎁', schedule: 'وقت اللعب الرسمي', task: 'وقت كسبته بإنجازك 💪' }[st.why];
+      line = st.capped && st.until - t.getTime() < 3600000 ? 'آخر وقتك اليومي ⏳'
+        : { parent: 'سمح لك والداك 🎁', schedule: 'وقت اللعب الرسمي', task: 'وقت كسبته بإنجازك 💪' }[st.why];
       big = CK.countdown(st.until - t.getTime());
-    } else if (st.reason === 'force') line = 'الجهاز مقفل من والديك';
+    } else if (st.reason === 'cap') line = `انتهى حدّك اليومي (${capText(c.max_daily_min)})، نلتقي غدًا 🌙`;
+    else if (st.reason === 'force') line = 'الجهاز مقفل من والديك';
     else if (st.reason === 'main') line = 'أنجز مهامك الرئيسية ليُفتح الجهاز';
     else line = st.nextWindow ? `يفتح الجهاز الساعة ${clock(st.nextWindow.s)}` : 'انتهى وقت اللعب اليوم';
     const key = (st.unlocked ? 'u' : 'l') + line;
@@ -173,10 +282,12 @@
       heroEl.dataset.key = key;
       heroEl.replaceChildren(h('div', { class: 'hero' + (st.unlocked ? '' : ' locked') },
         h('div', { class: 'row between' }, h('b', {}, 'مرحبًا ' + c.name), h('span', {}, st.unlocked ? '🔓' : '🔒')),
-        h('div', {}, line), h('div', { class: 'big', id: 'cd' })));
+        h('div', {}, line), h('div', { class: 'big', id: 'cd' }), h('div', { class: 'small', id: 'use', style: 'opacity:.85' })));
     }
     const cd = $('#cd', heroEl);
     cd.textContent = big; cd.classList.toggle('hidden', !big);
+    const use = $('#use', heroEl), m = Math.floor(S.U.used / 60000);
+    use.textContent = c.max_daily_min ? `استخدامك اليوم ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')} من ${capText(c.max_daily_min)}` : '';
   }
 
   function drawNav() {
@@ -216,7 +327,11 @@
     return h('div', { class: 'card soft' }, h('h2', {}, '🎁 وقت كسبته'),
       st.mainsOk ? null : h('p', { class: 'small' }, 'يبدأ بعد إنجاز مهامك الرئيسية.'),
       st.ready.map((g) => h('div', { class: 'item' }, h('span', { class: 'grow' }, g.title || 'وقت إضافي'),
-        h('button', { class: 'btn', disabled: !st.mainsOk, onclick: () => run(async () => { await q(sb.rpc('start_grant', { p_id: g.id })); await reload(); }, 'بدأ وقتك، استمتع!') }, `ابدأ ${g.minutes} دقيقة`))));
+        h('button', { class: 'btn', disabled: !st.mainsOk || st.reason === 'cap', onclick: () => {
+          const s = nextStart();
+          pushOp({ type: 'start', grant: g.id, start: iso(s), end: iso(s + g.minutes * 60000) });
+          toast('بدأ وقتك، استمتع!');
+        } }, `ابدأ ${g.minutes} دقيقة`))));
   }
 
   function viewHome() {
@@ -265,10 +380,12 @@
             h('div', { class: 'small muted' }, p ? `${KINDS[t.kind].name} · أنجزت ${p.from} من ${p.units.length}` : KINDS[t.kind].name + ` · ${t.reward_min} دقيقة`)), action);
       }) : h('p', { class: 'muted small' }, 'لا توجد مهام حاليًا.')));
 
-    const quickLeft = c.max_quick_per_day - count(['reading', 'puzzle']);
+    const capped = S.st.reason === 'cap';
+    if (capped) out.unshift(h('div', { class: 'card warn' }, h('p', {}, `بلغت حدك اليومي (${capText(c.max_daily_min)}). ما تكسبه من مهام الحفظ والمهام المنزلية يبقى محفوظًا لك لتبدأه غدًا.`)));
+    const quickLeft = capped ? 0 : c.max_quick_per_day - count(['reading', 'puzzle']);
     const quick = S.d.tasks.filter((t) => ['reading', 'puzzle'].includes(t.kind));
     out.push(h('div', { class: 'card' }, h('h2', {}, '⚡ مهام سريعة تكسب بها ربع ساعة'),
-      quickLeft <= 0 ? h('p', { class: 'tag warn' }, 'بلغت الحد اليومي للمهام السريعة') : null,
+      quickLeft <= 0 && !capped ? h('p', { class: 'tag warn' }, 'بلغت الحد اليومي للمهام السريعة') : null,
       quick.length ? quick.map((t) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, KINDS[t.kind].ic),
         h('div', { class: 'grow' }, h('div', {}, t.title), h('div', { class: 'small muted' }, `${KINDS[t.kind].name} · ${t.reward_min} دقيقة`)),
         subToday(t) ? h('span', { class: 'tag ok' }, 'تمت اليوم ✓')
@@ -336,10 +453,13 @@
   }
 
   // ---- المهام السريعة ----
-  async function claim(t) {
-    const ok = await run(async () => { await q(sb.rpc('claim_quick', { p_task: t.id, p_day: today() })); await reload(); }, `أحسنت! فُتح لك ${t.reward_min} دقيقة 🎉`);
-    closeOverlay();
-    if (ok) { S.tab = 'home'; render(); }
+  // يُفتح الوقت فورًا حتى بلا إنترنت، ويُسجَّل على الخادم عند عودة الاتصال
+  function claim(t) {
+    closeOverlay(); S.tab = 'home';
+    const s = nextStart();
+    pushOp({ type: 'quick', task: t.id, kind: t.kind, title: t.title, minutes: t.reward_min, day: today(), start: iso(s), end: iso(s + t.reward_min * 60000) });
+    render();
+    toast(S.st.reason === 'cap' ? `أحسنت! أضيف ${t.reward_min} دقيقة، لكنك بلغت حدك اليومي` : `أحسنت! فُتح لك ${t.reward_min} دقيقة 🎉`);
   }
 
   function openReading(t) {
@@ -381,26 +501,49 @@
   }
 
   // ================= الفاصل =================
+  // الفاصل: فائدة أو سؤال أو قصة، ثم راحة للعينين حتى تكتمل مدته (حسب إعداد الوالدين)
   function openBreak(grant) {
     S.breakOpen = true;
+    const c = S.d.child, mode = c.break_mode, total = c.break_max_sec || 120;
+    const t0 = Date.now();
+    const elapsed = () => Math.round((Date.now() - t0) / 1000);
+    const finish = () => {
+      const secs = Math.min(elapsed(), total);
+      S.U.since = 0; S.U.rest = 0; save('ck-usage', S.U);
+      S.breakOpen = false; closeOverlay();
+      if (grant && secs > 0) pushOp({ type: 'break', grant: grant.id, secs }); // تعويض مدة الفاصل
+      else tick(true);
+    };
+    CK.beep(); N.toast('⏸ استراحة قصيرة');
     const last = localStorage.getItem('ck-last-break');
     const pool = S.d.breaks.filter((b) => b.id !== last);
-    const item = CK.shuffle(pool.length ? pool : S.d.breaks)[0];
-    const t0 = Date.now();
-    const finish = async () => {
-      const secs = Math.round((Date.now() - t0) / 1000);
-      await sb.rpc('break_done', { p_id: grant.id, p_secs: secs }).then(() => {}, () => {});
-      S.breakOpen = false; closeOverlay(); await reload();
+    const item = mode === 'eyes' ? null : CK.shuffle(pool.length ? pool : S.d.breaks)[0];
+    const eyes = () => {
+      const left0 = mode === 'mix' || !item ? total - elapsed() : 0;
+      if (left0 < 10) return finish();
+      const body = openOverlay('👀 راحة للعينين', 'break');
+      let left = left0;
+      const num = h('div', { class: 'big center', style: 'font-size:56px' }, CK.countdown(left * 1000));
+      const back = h('button', { class: 'btn big block', disabled: true }, 'انتظر حتى ينتهي العد');
+      const timer = setInterval(() => {
+        left = left0 - (elapsed() - (total - left0)); num.textContent = CK.countdown(Math.max(0, left) * 1000);
+        if (left <= 0) { clearInterval(timer); back.disabled = false; back.textContent = '🎮 العودة للعب'; CK.beep(); }
+      }, 1000);
+      back.onclick = () => { clearInterval(timer); finish(); };
+      body.append(h('div', { class: 'card center' }, h('div', { class: 'logo' }, '🌳'),
+        h('h2', {}, 'أرِح عينيك قليلًا'),
+        h('p', { class: 'reading' }, 'ضع الجهاز جانبًا، وانظر إلى شيء بعيد كالنافذة أو آخر الغرفة، ورمّش عينيك عدة مرات. يمكنك أن تقوم وتتحرك قليلًا.'),
+        num), back);
     };
-    if (!item) return finish();
+    if (!item) return eyes();
     localStorage.setItem('ck-last-break', item.id);
-    CK.beep(); N.toast('⏸ استراحة قصيرة');
     const body = openOverlay({ question: '❓ سؤال سريع', fact: '💡 فائدة', story: '📗 قصة قصيرة' }[item.kind], 'break');
     let answered = item.kind !== 'question', left = 15;
+    const next = mode === 'mix' ? '👀 التالي: راحة للعينين' : '🎮 العودة للعب';
     const back = h('button', { class: 'btn big block', disabled: true }, '');
-    const upd = () => { back.disabled = left > 0 || !answered; back.textContent = left > 0 ? `العودة للعب بعد ${left}` : answered ? '🎮 العودة للعب' : 'أجب عن السؤال أولًا'; };
+    const upd = () => { back.disabled = left > 0 || !answered; back.textContent = left > 0 ? `اقرأ بتمعّن… ${left}` : answered ? next : 'أجب عن السؤال أولًا'; };
     const timer = setInterval(() => { left--; upd(); if (left <= 0) clearInterval(timer); }, 1000);
-    back.onclick = () => { clearInterval(timer); finish(); };
+    back.onclick = () => { clearInterval(timer); eyes(); };
     const result = h('p', { class: 'center' });
     const opts = (item.options || []).map((o, i) => h('button', { class: 'opt', onclick: () => {
       if (answered) return;

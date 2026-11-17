@@ -149,14 +149,22 @@ const CK = (() => {
     }
     const parentG = cur.find((i) => i.g && i.g.source === 'parent');
     const inSched = cur.some((i) => i.sched);
-    const st = { ...base, unlocked: true, until, why: parentG ? 'parent' : inSched ? 'schedule' : 'task' };
-    const bg = !parentG && !inSched && cur.find((i) => i.g && i.g.with_breaks);
-    if (bg) {
-      const ext = (bg.e - bg.s) - bg.g.minutes * 60000; // ما أضيف تعويضًا عن الفواصل السابقة
-      const br = bg.s + ext + (bg.g.breaks_done + 1) * c.break_interval_min * 60000;
-      if (br < bg.e - 60000) { st.breakAt = br; st.breakGrant = bg.g; }
+    // الوقت الجاري الذي يُعوَّض فيه الفاصل: المنحة التي تنتهي عند نهاية الوقت المفتوح
+    const endG = iv.find((i) => i.g && Math.abs(i.e - until) < 1000);
+    const st = { ...base, unlocked: true, until, why: parentG ? 'parent' : inSched ? 'schedule' : 'task', endGrant: endG ? endG.g : null };
+    // الحد اليومي للاستخدام (إذن الوالدين المباشر يتجاوزه)
+    const cap = (c.max_daily_min || 0) * 60000;
+    if (cap && !parentG) {
+      const left = cap - usedToday(d, now);
+      if (left <= 0) return { ...base, reason: 'cap' };
+      if (t0 + left < st.until) { st.until = t0 + left; st.capped = true; st.endGrant = null; }
     }
     return st;
+  }
+  // دقائق الاستخدام اليوم: الجهاز يمرّر عدّاده المحلي، والوالد يقرأ آخر ما أرسله الجهاز
+  function usedToday(d, now = new Date()) {
+    if (d.usedMs != null) return d.usedMs;
+    return d.child.usage_day === dayStr(now) ? d.child.usage_secs * 1000 : 0;
   }
 
   // ---------- الدخول ----------
@@ -328,7 +336,7 @@ const CK = (() => {
 
   return {
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
-    splitUnits, nextPortion, computeState, gate, me, fn, subscribe, debounce,
+    splitUnits, nextPortion, computeState, usedToday, gate, me, fn, subscribe, debounce,
     startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, beep, shuffle,
   };
 })();
