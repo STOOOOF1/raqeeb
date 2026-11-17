@@ -18,6 +18,8 @@
     info: () => { try { return B ? JSON.parse(B.info()) : { preview: true }; } catch { return {}; } },
     // حالة الشاشة من النظام: {on, off: مجموع مدة الإطفاء, boot}
     screen: () => { try { return B && B.screen ? JSON.parse(B.screen()) : null; } catch { return null; } },
+    // رمز الربط القادم مع التجهيز برمز QR (clear=true بعد نجاح الربط)
+    pairCode: (clear) => { try { return B && B.pairCode ? B.pairCode(!!clear) : ''; } catch { return ''; } },
   };
 
   const load = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch { return def; } };
@@ -107,9 +109,12 @@
         ev.preventDefault(); btn.disabled = true;
         const ok = await run(() => CK.gate({ action: 'pair_child', code: code.value.trim() }));
         btn.disabled = false;
-        if (ok) boot();
+        if (ok) { N.pairCode(true); boot(); }
       } }, code, btn),
       N.has ? h('button', { class: 'btn plain block', onclick: N.wifi }, '📶 إعدادات الواي فاي') : null)));
+    // جهاز جُهّز برمز QR: رمز الربط وصل معه، فيُربط تلقائيًا
+    const pc = N.pairCode(false);
+    if (/^\d{6}$/.test(pc)) { code.value = pc; btn.click(); }
   }
 
   // ================= الهيكل والبيانات =================

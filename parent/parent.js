@@ -312,7 +312,7 @@
       h('div', {}, h('span', { class: 'tag ' + cls }, text)),
       usageBox(c), planLine(c),
       c.paired_at && c.device_info?.native && !c.device_info.owner
-        ? h('div', { class: 'card bad' }, h('p', { class: 'small' }, '⚠️ جهاز الطفل غير مؤمَّن: لم يُفعَّل وضع «مالك الجهاز»، فيستطيع الطفل الخروج من التطبيق. راجع خطوات التفعيل في ملف التعليمات.')) : null,
+        ? h('div', { class: 'card bad' }, h('p', { class: 'small' }, '⚠️ جهاز الطفل غير مؤمَّن: لم يُفعَّل وضع «مالك الجهاز»، فيستطيع الطفل الخروج من التطبيق. جهّزه برمز QR من الإعدادات (تجهيز جهاز جديد).')) : null,
       c.paired_at && c.device_info?.preview
         ? h('div', { class: 'small muted' }, 'الجهاز المرتبط حاليًا متصفح للمعاينة وليس جهاز أندرويد.') : null,
       h('div', { class: 'row wrap' },
@@ -640,6 +640,61 @@
       h('p', { class: 'small muted' }, 'الرمز صالح لمرة واحدة. عند ربط جهاز جديد يُفصل الجهاز القديم تلقائيًا.')]);
   }
 
+  // ---------- تجهيز جهاز الطفل برمز QR ----------
+  // بعد ضبط المصنع: اضغط 6 مرات على شاشة الترحيب، صوّر الرمز، فيُنزَّل التطبيق ويصبح «مالك الجهاز» ويُربط تلقائيًا.
+  const APK_URL = 'https://github.com/STOOOOF1/raqeeb/releases/latest/download/raqeeb.apk';
+  const APK_SIGNATURE = 'EOlSKjuqxEkjiP1pbyhu6CQsbFauUnSU3NscjneGeZk'; // بصمة شهادة التوقيع (انظر .github/workflows/android.yml)
+  let qrLib = null;
+  const loadQR = () => qrLib || (qrLib = new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = '../shared/vendor/qrcode.js'; s.onload = () => res(window.qrcode); s.onerror = () => { qrLib = null; rej(new Error('تعذر تحميل مولّد الرمز')); };
+    document.head.append(s);
+  }));
+  function provisionJson(code, ssid, pass) {
+    const P = 'android.app.extra.PROVISIONING_';
+    const o = {
+      [P + 'DEVICE_ADMIN_COMPONENT_NAME']: 'app.contkid.kid/.AdminReceiver',
+      [P + 'DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION']: APK_URL,
+      [P + 'DEVICE_ADMIN_SIGNATURE_CHECKSUM']: APK_SIGNATURE,
+      [P + 'LEAVE_ALL_SYSTEM_APPS_ENABLED']: true,
+      [P + 'SKIP_ENCRYPTION']: true,
+      [P + 'ADMIN_EXTRAS_BUNDLE']: { pair_code: code },
+    };
+    if (ssid) {
+      o[P + 'WIFI_SSID'] = ssid;
+      if (pass) { o[P + 'WIFI_PASSWORD'] = pass; o[P + 'WIFI_SECURITY_TYPE'] = 'WPA'; } else o[P + 'WIFI_SECURITY_TYPE'] = 'NONE';
+    }
+    return JSON.stringify(o);
+  }
+  async function setupQR(c) {
+    if (c.paired_at && !(await confirmBox(`جهاز ${c.name} مرتبط الآن. تجهيز جهاز جديد يفصل الجهاز الحالي عند استخدامه. متابعة؟`))) return;
+    let code, lib;
+    if (!(await run(async () => { [code, lib] = await Promise.all([q(sb.rpc('new_pair_code', { p_child: c.id })), loadQR()]); }))) return;
+    reload();
+    const ssid = h('input', { type: 'text', maxlength: 32, placeholder: 'اختياري', dir: 'auto', autocomplete: 'off' });
+    const pass = h('input', { type: 'password', maxlength: 63, placeholder: 'اختياري', dir: 'ltr', autocomplete: 'off' });
+    const box = h('div', { style: 'background:#fff;padding:10px;border-radius:14px;display:flex;justify-content:center' });
+    const draw = () => {
+      const qr = lib(0, 'L');
+      qr.addData(provisionJson(code, ssid.value.trim(), pass.value));
+      qr.make();
+      box.innerHTML = qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true });
+      const svg = box.firstElementChild; if (svg) { svg.style.width = '100%'; svg.style.maxWidth = '340px'; svg.style.height = 'auto'; }
+    };
+    ssid.oninput = draw; pass.oninput = draw;
+    draw();
+    modal('تجهيز جهاز ' + c.name + ' برمز QR', [
+      h('ol', { class: 'small', style: 'padding-inline-start:18px;margin:0;line-height:1.9' },
+        h('li', {}, 'اعمل ضبط المصنع لجهاز الطفل (الإعدادات ← حول الهاتف ← ضبط المصنع).'),
+        h('li', {}, 'في أول شاشة ترحيب اضغط على الشاشة 6 مرات متتالية في المكان نفسه، فتفتح الكاميرا.'),
+        h('li', {}, 'إن طلب الاتصال بالواي فاي فاتصل، ثم صوّر هذا الرمز.'),
+        h('li', {}, 'وافق على الخطوات: يُنزَّل التطبيق ويصبح «مالك الجهاز» ويُربط بـ' + c.name + ' تلقائيًا.')),
+      field('اسم شبكة الواي فاي (ليتصل الجهاز تلقائيًا)', ssid), field('كلمة مرور الواي فاي', pass),
+      box,
+      h('p', { class: 'small muted' }, 'لا تشارك هذا الرمز: فيه رمز الربط وكلمة مرور الشبكة إن كتبتها. وإن ظهر خطأ في التنزيل فتأكد أن الجهاز متصل بالإنترنت.'),
+    ]);
+  }
+
   function addChild() {
     const name = h('input', { type: 'text', maxlength: 30, placeholder: 'اسم الطفل' });
     const sample = h('input', { type: 'checkbox', checked: true });
@@ -672,6 +727,7 @@
           if (c.paired_at && !(await confirmBox('سيُنشأ رمز جديد، وعند استخدامه يُفصل الجهاز الحالي. متابعة؟'))) return;
           run(async () => { const code = await q(sb.rpc('new_pair_code', { p_child: c.id })); await reload(); showPairCode(c, code); });
         } }, c.pair_code ? 'رمز ربط جديد' : 'ربط جهاز'),
+        h('button', { class: 'btn ghost', onclick: () => setupQR(c) }, '📷 تجهيز جهاز جديد برمز QR'),
         sw('المهام الرئيسية تحتاج تأكيدي', 'main_requires_approval', 'عند الإيقاف يكفي أن يبلّغ الطفل بإنجازها ويصلك إشعار.'),
         sw('وضع القفل الكامل على الجهاز', 'kiosk_enabled', 'أوقفه مؤقتًا إذا أردت استخدام جهاز الطفل بحرية أو تثبيت تطبيقات.'),
         num('حد المهام السريعة يوميًا', 'max_quick_per_day', 0, 20),

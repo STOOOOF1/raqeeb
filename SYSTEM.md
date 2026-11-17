@@ -346,3 +346,23 @@
 - عمود `max_extra_per_day` موجود في القاعدة ولا تستخدمه الواجهة الحالية.
 - دالة `yt` تعتمد على قراءة صفحات يوتيوب وخلاصة RSS، فقد تتعطل إن غيّر يوتيوب صفحاته.
 - الرقم السري للأسرة مشترك بين الوالدين ومحمي من التخمين (8 محاولات ثم قفل 10 دقائق).
+
+---
+
+## 15. تطبيق أندرويد (`android/`)
+
+أعيد بناء مصدره من ملف APK (الإصدار 1.0) في مجلد `android/` بلغة Kotlin، مع إضافة التجهيز برمز QR.
+
+| الملف | الدور |
+|---|---|
+| `MainActivity.kt` | WebView يعرض `kid/index.html` من أصول التطبيق على `https://appassets.androidplatform.net`، وجسر `AndroidBridge`، ووضع Lock Task |
+| `Policy.kt` | يحفظ السياسة القادمة من `setPolicy`، وعند كون التطبيق مالك الجهاز: التطبيقات المسموحة في Lock Task، والتطبيق شاشةً رئيسية دائمة، وقيود (`no_factory_reset`، `no_safe_boot`، `no_add_user`، `no_config_date_time`)، ومنبّه عند انتهاء الوقت أو حلول الفاصل |
+| `Screen.kt` | مدة إطفاء الشاشة لعدّاد الاستخدام |
+| `ProvisioningActivity.kt` | خطوات التجهيز برمز QR: وضع «جهاز مُدار بالكامل»، وحفظ رمز الربط المضمَّن |
+| `Receivers.kt` | `AdminReceiver` (مكوّن مالك الجهاز `app.contkid.kid/.AdminReceiver`)، ومنبّه السياسة، وإعادة التطبيق بعد التشغيل |
+
+- صفحات الويب (`kid/` و`shared/`) تُنسخ إلى أصول التطبيق عند كل بناء.
+- **البناء:** `.github/workflows/android.yml` على GitHub Actions. مفتاح التوقيع محفوظ في `app_secrets` (Supabase)، وتسلّمه دالة `ci` فقط لبناء يقدّم رمز OIDC موقّعًا من GitHub لهذا المستودع. على `main` يُنشر الملف في Releases: `releases/latest/download/raqeeb.apk`.
+- **بصمة التوقيع:** `EOlSKjuqxEkjiP1pbyhu6CQsbFauUnSU3NscjneGeZk` (موجودة في سير البناء وفي `parent.js`).
+- **التجهيز برمز QR:** تطبيق الوالدين ← الإعدادات ← «تجهيز جهاز جديد برمز QR». بعد ضبط المصنع: 6 ضغطات على شاشة الترحيب، ثم تصوير الرمز، فيُنزَّل التطبيق ويصبح مالك الجهاز ويُربط بالطفل تلقائيًا.
+- **التجهيز بالحاسوب:** `adb shell dpm set-device-owner app.contkid.kid/.AdminReceiver`.
