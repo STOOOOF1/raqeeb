@@ -424,7 +424,8 @@
     const body = openOverlay(KINDS[t.kind].ic + ' ' + t.title);
     const portion = h('div', { class: 'portion' }, p.text);
     const stage = h('div', { class: 'col' });
-    const label = t.kind === 'quran' ? `الآيات ${p.from + 1} إلى ${p.to}` : `المقطع ${p.from + 1} إلى ${p.to}`;
+    const unitW = t.kind === 'quran' ? 'الآيات' : t.split === 'sentence' ? 'الجمل' : 'الأبيات';
+    const label = p.sec ? `${p.sec}: ${unitW} ${p.secFrom} إلى ${p.secTo}` : `${unitW} ${p.from + 1} إلى ${p.to}`;
     const recite = () => {
       portion.classList.add('hidden');
       stage.replaceChildren(
@@ -438,7 +439,7 @@
         const ok = await run(async () => {
           const path = await CK.uploadAudio(blob, S.me.family_id, S.me.child_id);
           await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: t.kind, day: today(),
-            audio_path: path, portion: p.text, units_from: p.from, units_to: p.to }));
+            audio_path: path, portion: (p.sec ? p.sec + ' — ' : '') + p.text, units_from: p.from, units_to: p.to }));
           await reload();
         }, 'أُرسل تسميعك لوالديك، انتظر إجازتهم 🌟');
         if (ok) closeOverlay(); else { send.disabled = false; send.textContent = '📤 إرسال لوالديّ'; }

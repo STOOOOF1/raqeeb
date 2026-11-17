@@ -49,22 +49,25 @@ const CK = (() => {
   // نافذة نموذج: onOk يعيد false لإبقائها مفتوحة
   function modal(title, body, { okText = 'حفظ', onOk, cancelText = 'إلغاء', extra } = {}) {
     return new Promise((resolve) => {
+      // يُغلق ويُحسم مباشرة دون انتظار حدث close (قد يتأخر في بعض المتصفحات حتى الرسم التالي)
+      let done = false;
+      const finish = (v) => { if (done) return; done = true; if (dlg.open) dlg.close(); dlg.remove(); resolve(v); };
       const ok = h('button', { class: 'btn', type: 'submit' }, okText);
       const dlg = h('dialog', {},
         h('form', { method: 'dialog' },
           h('div', { class: 'dh' }, title),
           h('div', { class: 'db' }, body),
           h('div', { class: 'df' }, onOk ? ok : null,
-            h('button', { class: 'btn plain', type: 'button', onclick: () => { dlg.close(); } }, onOk ? cancelText : 'إغلاق'), extra)));
+            h('button', { class: 'btn plain', type: 'button', onclick: () => finish(false) }, onOk ? cancelText : 'إغلاق'), extra)));
       $('form', dlg).addEventListener('submit', async (ev) => {
         ev.preventDefault();
-        if (!onOk) return dlg.close();
+        if (!onOk) return finish(false);
         ok.disabled = true;
-        try { if ((await onOk()) !== false) { dlg.returnValue = 'ok'; dlg.close(); } }
+        try { if ((await onOk()) !== false) return finish(true); }
         catch (e) { console.error(e); toast(errMsg(e)); }
         ok.disabled = false;
       });
-      dlg.addEventListener('close', () => { dlg.remove(); resolve(dlg.returnValue === 'ok'); });
+      dlg.addEventListener('close', () => finish(false)); // زر الرجوع أو Esc
       document.body.append(dlg);
       dlg.showModal();
     });
@@ -99,16 +102,40 @@ const CK = (() => {
 
   // ---------- تجزئة النصوص ----------
   // line: كل سطر وحدة (آية أو بيت) — sentence: كل جملة وحدة (نثر)
-  function splitUnits(body, split) {
-    const text = (body || '').replace(/\r/g, '');
-    const parts = split === 'sentence' ? text.split(/(?<=[.!؟?。؛])\s+|\n+/) : text.split(/\n+/);
-    return parts.map((s) => s.trim()).filter(Boolean);
+  // السطر الذي يبدأ بـ # عنوان قسم (سورة أو باب)، لا يُحسب وحدة ولا يعبر المقطعُ حدودَه
+  function parseUnits(body, split) {
+    const out = []; let sec = null;
+    for (const raw of (body || '').replace(/\r/g, '').split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('#')) { sec = line.replace(/^#+\s*/, '') || null; continue; }
+      const parts = split === 'sentence' ? line.split(/(?<=[.!؟?。؛])\s+/) : [line];
+      for (const t of parts.map((x) => x.trim()).filter(Boolean)) out.push({ text: t, sec });
+    }
+    return out;
   }
-  // المقطع التالي المطلوب من الطفل في مهمة حفظ
+  const splitUnits = (body, split) => parseUnits(body, split).map((u) => u.text);
+  const words = (t) => t.split(/\s+/).filter((w) => w.replace(/[\u064B-\u0652\u0670\u06D6-\u06ED.،؛:…]/g, '')).length;
+  // المقطع التالي: حتى unit_size وحدة، لا يعبر حدود القسم، وإن حُدد config.words لا يتجاوز عدد الكلمات (توزيع متوازن)
   function nextPortion(task) {
-    const units = splitUnits(task.body, task.split);
-    const from = Math.min(task.progress, units.length), to = Math.min(from + task.unit_size, units.length);
-    return { units, from, to, text: units.slice(from, to).join('\n'), done: from >= units.length };
+    const all = parseUnits(task.body, task.split), n = all.length;
+    const from = Math.min(task.progress, n), sec = all[from]?.sec ?? null;
+    const max = Math.max(1, task.unit_size || 1), budget = +(task.config && task.config.words) || 0;
+    let to = from, w = 0;
+    while (to < n && to - from < max && all[to].sec === sec) {
+      const k = words(all[to].text);
+      if (budget && to > from && w + k > budget) break;
+      w += k; to++;
+    }
+    // لا يُترك ذيل صغير من القسم لجلسة مستقلة (وحدة واحدة، أو أقل من نصف حد الكلمات)
+    if (sec && to > from) {
+      let k = to, rw = 0;
+      while (k < n && all[k].sec === sec) { rw += words(all[k].text); k++; }
+      if (k > to && (budget ? rw <= budget / 2 : k - to === 1)) { to = k; w += rw; }
+    }
+    const first = sec ? all.findIndex((u) => u.sec === sec) : 0;
+    return { units: all.map((u) => u.text), from, to, text: all.slice(from, to).map((u) => u.text).join('\n'), done: from >= n,
+      sec, secFrom: from - first + 1, secTo: to - first, words: w };
   }
 
   // ---------- منطق الفتح والقفل ----------
@@ -174,7 +201,8 @@ const CK = (() => {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || 'تعذر الاتصال بالخادم');
-    await q(sb.auth.signInWithPassword({ email: j.email, password: j.password }));
+    if (j.session) await q(sb.auth.setSession(j.session));
+    else await q(sb.auth.signInWithPassword({ email: j.email, password: j.password }));
     return j;
   }
   async function me() {
@@ -336,7 +364,7 @@ const CK = (() => {
 
   return {
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
-    splitUnits, nextPortion, computeState, usedToday, gate, me, fn, subscribe, debounce,
+    parseUnits, splitUnits, nextPortion, words, computeState, usedToday, gate, me, fn, subscribe, debounce,
     startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, beep, shuffle,
   };
 })();
