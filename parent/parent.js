@@ -5,7 +5,7 @@
   const root = $('#root');
   const S = {
     me: null, family: null, children: [], cur: localStorage.getItem('ck-cur'), tab: 'home', taskTab: 'main',
-    d: { members: [], schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
+    d: { members: [], schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], templates: [] },
     unread: {}, chat: null, chatChild: null, appFilter: '',
   };
   const cur = () => S.children.find((c) => c.id === S.cur) || null;
@@ -17,66 +17,99 @@
   async function boot() {
     try { S.me = await CK.me(); } catch (e) { console.error(e); }
     if (!S.me || S.me.role !== 'parent') return authScreen();
+    if (!S.me.username) return claimScreen();
     if (sessionStorage.getItem('ck-unlocked') !== '1') return pinScreen();
     start();
   }
 
+  // حساب من النظام القديم (رقم سري للأسرة): يختار اسم مستخدم وكلمة مرور مرة واحدة
+  function claimScreen() {
+    const user = h('input', { type: 'text', maxlength: 30, dir: 'ltr', autocapitalize: 'off', spellcheck: false, autocomplete: 'username' });
+    const pass = h('input', { type: 'password', maxlength: 72, dir: 'ltr', autocomplete: 'new-password' });
+    const pass2 = h('input', { type: 'password', maxlength: 72, dir: 'ltr', autocomplete: 'new-password' });
+    root.replaceChildren(h('div', { class: 'splash' }, h('div', { class: 'card' },
+      h('div', { class: 'logo' }, '🔐'), h('h1', { class: 'center' }, 'إعداد حسابك'),
+      h('p', { class: 'small' }, `مرحبًا ${S.me.name}. أصبح الدخول باسم مستخدم وكلمة مرور خاصة بك بدل الرقم السري المشترك، فتدخل بها من أي جهاز. اخترهما الآن مرة واحدة.`),
+      h('form', { class: 'col', onsubmit: async (ev) => {
+        ev.preventDefault();
+        await run(async () => {
+          if (pass.value.length < 6) throw new Error('كلمة المرور 6 أحرف على الأقل');
+          if (pass.value !== pass2.value) throw new Error('كلمتا المرور غير متطابقتين');
+          await CK.fn('gate', { action: 'claim_account', username: user.value, password: pass.value });
+          await CK.gate({ action: 'login', username: user.value, password: pass.value });
+          sessionStorage.setItem('ck-unlocked', '1');
+          boot();
+        }, 'تم إعداد حسابك ✅');
+      } }, field('اسم المستخدم (حروف أو أرقام بلا مسافات)', user), field('كلمة المرور', pass), field('تأكيد كلمة المرور', pass2),
+        h('button', { class: 'btn big block', type: 'submit' }, 'حفظ والمتابعة')))));
+  }
+
+  // دخول بحساب ثابت (اسم مستخدم وكلمة مرور) أو إنشاء أسرة جديدة
   function authScreen() {
-    let mode = 'create';
+    let mode = 'login';
     const draw = () => {
       const f = {
         family: h('input', { type: 'text', placeholder: 'مثال: أسرة أبي عبدالله', maxlength: 40 }),
-        code: h('input', { type: 'tel', class: 'pin', maxlength: 6, placeholder: '000000' }),
         name: h('input', { type: 'text', placeholder: 'مثال: الأب', maxlength: 30 }),
-        pin: h('input', { type: 'password', inputmode: 'numeric', class: 'pin', maxlength: 12, placeholder: '••••' }),
+        user: h('input', { type: 'text', placeholder: 'مثال: abu_abdullah', maxlength: 30, autocomplete: 'username', autocapitalize: 'off', spellcheck: false, dir: 'ltr' }),
+        pass: h('input', { type: 'password', maxlength: 72, autocomplete: mode === 'login' ? 'current-password' : 'new-password', dir: 'ltr' }),
+        pass2: h('input', { type: 'password', maxlength: 72, autocomplete: 'new-password', dir: 'ltr' }),
       };
-      const btn = h('button', { class: 'btn big block', type: 'submit' }, mode === 'create' ? 'إنشاء الأسرة' : 'انضمام');
+      const btn = h('button', { class: 'btn big block', type: 'submit' }, mode === 'login' ? 'دخول' : 'إنشاء الأسرة');
       const form = h('form', { class: 'col', onsubmit: async (ev) => {
         ev.preventDefault(); btn.disabled = true;
         const ok = await run(async () => {
-          const body = mode === 'create'
-            ? { action: 'create_family', family_name: f.family.value, parent_name: f.name.value, pin: f.pin.value }
-            : { action: 'join_parent', code: f.code.value, parent_name: f.name.value, pin: f.pin.value };
-          await CK.gate(body);
+          if (mode === 'create') {
+            if (f.pass.value.length < 6) throw new Error('كلمة المرور 6 أحرف على الأقل');
+            if (f.pass.value !== f.pass2.value) throw new Error('كلمتا المرور غير متطابقتين');
+            await CK.gate({ action: 'create_family', family_name: f.family.value, parent_name: f.name.value, username: f.user.value, password: f.pass.value });
+          } else await CK.gate({ action: 'login', username: f.user.value, password: f.pass.value });
           sessionStorage.setItem('ck-unlocked', '1');
         });
         btn.disabled = false;
         if (ok) boot();
       } },
-        mode === 'create' ? field('اسم الأسرة', f.family) : field('رمز الأسرة (من إعدادات تطبيق أحد الوالدين)', f.code),
-        field('اسمك كما يظهر للطفل', f.name),
-        field(mode === 'create' ? 'اختر رقمًا سريًا للوالدين (4 أرقام أو أكثر)' : 'الرقم السري للوالدين', f.pin),
-        btn);
+        mode === 'create' ? field('اسم الأسرة', f.family) : null,
+        mode === 'create' ? field('اسمك كما يظهر للطفل', f.name) : null,
+        field(mode === 'create' ? 'اختر اسم مستخدم (حروف أو أرقام بلا مسافات)' : 'اسم المستخدم', f.user),
+        field('كلمة المرور', f.pass),
+        mode === 'create' ? field('تأكيد كلمة المرور', f.pass2) : null,
+        btn,
+        mode === 'login' ? h('p', { class: 'small muted center' }, 'نسيت كلمة المرور؟ اطلب من مدير أسرتك تعيين كلمة جديدة لك، أو تواصل مع الإدارة.')
+          : h('p', { class: 'small muted center' }, 'ستكون أنت مدير الأسرة، وتضيف أولياء الأمور الآخرين من الإعدادات.'));
       root.replaceChildren(h('div', { class: 'splash' }, h('div', { class: 'card' },
         h('div', { class: 'logo' }, '🛡️'), h('h1', { class: 'center' }, 'رقيب'),
         h('p', { class: 'muted center' }, 'تطبيق الوالدين للتحكم بأجهزة الأطفال'),
         h('div', { class: 'tabs' },
-          h('button', { class: mode === 'create' ? 'on' : '', onclick: () => { mode = 'create'; draw(); } }, 'أسرة جديدة'),
-          h('button', { class: mode === 'join' ? 'on' : '', onclick: () => { mode = 'join'; draw(); } }, 'انضمام لأسرة')),
+          h('button', { class: mode === 'login' ? 'on' : '', onclick: () => { mode = 'login'; draw(); } }, 'تسجيل الدخول'),
+          h('button', { class: mode === 'create' ? 'on' : '', onclick: () => { mode = 'create'; draw(); } }, 'أسرة جديدة')),
         form)));
     };
     draw();
   }
 
+  // قفل التطبيق: يُفتح بكلمة مرور ولي الأمر نفسه
   function pinScreen() {
-    const pin = h('input', { type: 'password', inputmode: 'numeric', class: 'pin', maxlength: 12, placeholder: '••••', autofocus: true });
+    const pass = h('input', { type: 'password', maxlength: 72, autocomplete: 'current-password', dir: 'ltr', autofocus: true });
     root.replaceChildren(h('div', { class: 'splash' }, h('div', { class: 'card' },
-      h('div', { class: 'logo' }, '🔒'), h('h1', { class: 'center' }, 'الرقم السري للوالدين'),
+      h('div', { class: 'logo' }, '🔒'), h('h1', { class: 'center' }, 'مرحبًا ' + (S.me?.name || '')),
+      h('p', { class: 'muted center' }, 'أدخل كلمة المرور لفتح التطبيق'),
       h('form', { class: 'col', onsubmit: async (ev) => {
         ev.preventDefault();
         await run(async () => {
-          if (!(await q(sb.rpc('check_pin', { p_pin: pin.value })))) { pin.value = ''; throw new Error('الرقم السري غير صحيح'); }
+          await CK.gate({ action: 'login', username: S.me.username, password: pass.value }).catch((e) => { pass.value = ''; throw e; });
           sessionStorage.setItem('ck-unlocked', '1');
           start();
         });
-      } }, pin, h('button', { class: 'btn big block', type: 'submit' }, 'دخول')))));
-    pin.focus();
+      } }, field('كلمة المرور', pass), h('button', { class: 'btn big block', type: 'submit' }, 'فتح')),
+      h('button', { class: 'btn plain block', onclick: async () => { await sb.auth.signOut(); sessionStorage.clear(); location.reload(); } }, 'الدخول بحساب آخر'))));
+    pass.focus();
   }
 
   // ================= الهيكل والبيانات =================
   let chipsEl, mainEl, navEl;
   const TABS = [['home', '🏠', 'الرئيسية'], ['schedule', '🕒', 'الأوقات'], ['apps', '📱', 'التطبيقات'],
-    ['tasks', '✅', 'المهام'], ['breaks', '💡', 'الفوائد'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
+    ['tasks', '✅', 'المهام'], ['breaks', '💡', 'الفوائد'], ['templates', '📚', 'القوالب'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
 
   async function start() {
     chipsEl = h('div', { class: 'chips' });
@@ -95,8 +128,8 @@
       const fam = S.me.family_id;
       const since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
       const nowIso = new Date().toISOString();
-      const [family, children, members, schedules, yt, tasks, subs, grants, breaks, unread] = await Promise.all([
-        q(sb.from('families').select('id,name,code').eq('id', fam).single()),
+      const [family, children, members, schedules, yt, tasks, subs, grants, breaks, unread, templates] = await Promise.all([
+        q(sb.from('families').select('id,name').eq('id', fam).single()),
         q(sb.from('children').select('*').order('created_at')),
         q(sb.from('members').select('*').eq('role', 'parent').order('created_at')),
         q(sb.from('schedules').select('*').order('start_time')),
@@ -106,12 +139,13 @@
         q(sb.from('grants').select('*').or(`status.eq.ready,ends_at.gte.${nowIso}`).order('created_at')),
         q(sb.from('break_items').select('*').order('created_at')),
         q(sb.from('messages').select('child_id').eq('sender', 'child').is('read_at', null)),
+        q(sb.from('templates').select('*').order('sort').order('created_at')),
       ]);
       S.family = family; S.children = children;
       children.forEach(capAlert);
       if (!cur()) { S.cur = children[0]?.id || null; }
       const apps = S.cur ? await q(sb.from('apps').select('*').eq('child_id', S.cur).order('label')) : [];
-      S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks };
+      S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks, templates };
       S.unread = {};
       for (const m of unread) S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
       render();
@@ -207,12 +241,12 @@
     const top = mainEl.scrollTop;
     mainEl.style.padding = '';
     const c = cur();
-    if (!c && S.tab !== 'settings') {
+    if (!c && S.tab !== 'settings' && S.tab !== 'templates') {
       mainEl.replaceChildren(card('مرحبًا 👋', h('p', {}, 'ابدأ بإضافة طفلك الأول، ثم اربط جهازه برمز الربط.'),
         h('button', { class: 'btn big', onclick: addChild }, '＋ إضافة طفل')));
       return;
     }
-    const view = { home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, breaks: viewBreaks, settings: viewSettings }[S.tab];
+    const view = { home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, breaks: viewBreaks, templates: viewTemplates, settings: viewSettings }[S.tab];
     mainEl.replaceChildren(...view(c).filter(Boolean));
     mainEl.scrollTop = top;
   }
@@ -276,7 +310,7 @@
       h('div', { class: 'row' }, h('div', { class: 'avatar' }, '🧒'),
         h('div', { class: 'grow' }, h('h2', {}, c.name), h('div', { class: 'small muted' }, c.paired_at ? CK.ago(c.last_seen) : 'الجهاز غير مرتبط بعد — انظر الإعدادات'))),
       h('div', {}, h('span', { class: 'tag ' + cls }, text)),
-      usageBox(c),
+      usageBox(c), planLine(c),
       c.paired_at && c.device_info?.native && !c.device_info.owner
         ? h('div', { class: 'card bad' }, h('p', { class: 'small' }, '⚠️ جهاز الطفل غير مؤمَّن: لم يُفعَّل وضع «مالك الجهاز»، فيستطيع الطفل الخروج من التطبيق. راجع خطوات التفعيل في ملف التعليمات.')) : null,
       c.paired_at && c.device_info?.preview
@@ -405,86 +439,14 @@
     quick: 'تُصحَّح تلقائيًا: يقرأ ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
   };
 
-  // محرر أسئلة اختيار من متعدد
-  function qEditor(initial) {
-    const list = (initial || []).map((x) => ({ q: x.q, options: [...x.options, '', '', ''].slice(0, 3), answer: x.answer ?? 0 }));
-    const box = h('div', { class: 'col' }); const uid = Math.random().toString(36).slice(2);
-    const draw = () => box.replaceChildren(
-      ...list.map((it, i) => h('div', { class: 'qbox' },
-        h('div', { class: 'row' }, h('input', { type: 'text', placeholder: `السؤال ${i + 1}`, value: it.q, oninput: (e) => { it.q = e.target.value; } }),
-          h('button', { class: 'iconbtn', type: 'button', onclick: () => { list.splice(i, 1); draw(); } }, '🗑')),
-        it.options.map((o, j) => h('div', { class: 'row' },
-          h('input', { type: 'radio', name: `a-${uid}-${i}`, checked: it.answer === j, title: 'الإجابة الصحيحة', onchange: () => { it.answer = j; } }),
-          h('input', { type: 'text', placeholder: `الخيار ${j + 1}`, value: o, oninput: (e) => { it.options[j] = e.target.value; } }))),
-        h('div', { class: 'small muted' }, 'حدد الدائرة بجانب الإجابة الصحيحة'))),
-      h('button', { class: 'btn ghost sm', type: 'button', onclick: () => { list.push({ q: '', options: ['', '', ''], answer: 0 }); draw(); } }, '＋ سؤال'));
-    draw();
-    return {
-      el: box,
-      get: () => list.filter((x) => x.q.trim()).map((x) => {
-        const opts = x.options.map((o) => o.trim());
-        if (opts.filter(Boolean).length < 2 || !opts[x.answer]) throw new Error('كل سؤال يحتاج خيارين على الأقل وإجابة صحيحة محددة');
-        const answerText = opts[x.answer]; const options = opts.filter(Boolean);
-        return { q: x.q.trim(), options, answer: options.indexOf(answerText) };
-      }),
-    };
-  }
-
+  // نماذج التحرير مشتركة مع القوالب (shared/tpl.js)
   function taskDialog(c, kind, t) {
-    const isNew = !t; t = t || { kind, title: '', body: '', split: kind === 'matn' ? 'line' : 'line', unit_size: 2, reward_min: ['reading', 'puzzle'].includes(kind) ? 15 : 30, questions: [], config: {}, progress: 0 };
-    const f = {
-      title: h('input', { type: 'text', value: t.title, maxlength: 80, required: true }),
-      body: h('textarea', { value: t.body }),
-      split: h('select', {}, h('option', { value: 'line', selected: t.split === 'line' }, 'نظم: كل بيت في سطر'), h('option', { value: 'sentence', selected: t.split === 'sentence' }, 'نثر: يُجزّأ بالجملة')),
-      unit: h('input', { type: 'number', min: 1, max: 50, value: t.unit_size }),
-      reward: h('input', { type: 'number', min: 5, max: 180, value: t.reward_min }),
-      ptype: h('select', {}, ...[['math', 'حساب ذهني'], ['memory', 'لعبة الذاكرة'], ['riddle', 'ألغاز (تكتبها أنت)']].map(([v, n]) => h('option', { value: v, selected: t.config.type === v }, n))),
-      level: h('select', {}, ...[[1, 'سهل'], [2, 'متوسط'], [3, 'صعب']].map(([v, n]) => h('option', { value: v, selected: +t.config.level === v }, n))),
-      quiz: h('input', { type: 'number', min: 1, max: 10, value: t.config.quiz_size || 3 }),
-    };
-    const qe = qEditor(t.questions);
-    const info = h('div', { class: 'small muted' });
-    const unitName = kind === 'quran' ? 'آية' : 'وحدة (بيت أو جملة)';
-    const upd = () => {
-      const n = CK.splitUnits(f.body.value, kind === 'quran' ? 'line' : f.split.value).length, u = Math.max(1, +f.unit.value || 1);
-      info.textContent = n ? `المجموع ${n} ${unitName} ← ${Math.ceil(n / u)} جلسة، كل جلسة ${u}` + (isNew ? '' : ` · أنجز ${Math.min(t.progress, n)}`) : 'اكتب النص لتظهر التجزئة';
-    };
-    const riddleBox = h('div', { class: 'col' }, h('b', {}, 'الألغاز'), qe.el, field('عدد الألغاز في كل محاولة', f.quiz));
-    const levelBox = field('المستوى', f.level);
-    const updPuzzle = () => { riddleBox.classList.toggle('hidden', f.ptype.value !== 'riddle'); levelBox.classList.toggle('hidden', f.ptype.value === 'riddle'); };
-    f.body.oninput = f.unit.oninput = f.split.onchange = upd; f.ptype.onchange = updPuzzle;
-
-    const body = [field('عنوان المهمة', f.title)];
-    if (kind === 'quran') body.push(field('الآيات (كل آية في سطر)', f.body), field('عدد الآيات لكل جلسة', f.unit), info);
-    if (kind === 'matn') body.push(field('نوع المتن', f.split), field('نص المتن', f.body), field('عدد الأبيات أو الجمل لكل جلسة', f.unit), info);
-    if (kind === 'chore') body.push(field('وصف المهمة (اختياري)', f.body));
-    if (kind === 'reading') body.push(field('النص المطلوب قراءته', f.body), h('b', {}, 'بنك الأسئلة (يُفضّل أكثر من عدد أسئلة الاختبار لتتغير عند الإعادة)'), qe.el, field('عدد أسئلة كل اختبار', f.quiz));
-    if (kind === 'puzzle') body.push(field('نوع اللعبة', f.ptype), levelBox, riddleBox);
-    if (kind !== 'main') body.push(field('مدة الفتح بالدقائق', f.reward));
-    if (!isNew && ['quran', 'matn'].includes(kind) && t.progress > 0) {
-      body.push(h('button', { class: 'btn plain sm', type: 'button', onclick: (e) => { t.progress = 0; e.target.textContent = 'سيبدأ من الأول عند الحفظ'; upd(); } }, '↺ إعادة الحفظ من البداية'));
-    }
-    upd(); updPuzzle();
-
-    modal((isNew ? 'إضافة: ' : 'تعديل: ') + KINDS[kind].name, body, {
+    const isNew = !t;
+    const form = TPL.taskForm(kind, t, { allowReset: !isNew });
+    modal((isNew ? 'إضافة: ' : 'تعديل: ') + KINDS[kind].name, form.body, {
       onOk: async () => {
-        const row = { kind, title: f.title.value.trim(), body: f.body.value.trim(), split: kind === 'quran' ? 'line' : f.split.value,
-          unit_size: Math.max(1, +f.unit.value || 1), reward_min: kind === 'main' ? 30 : Math.max(5, +f.reward.value || 15), questions: [], config: {}, progress: t.progress };
-        if (!row.title) throw new Error('اكتب عنوان المهمة');
-        if (['quran', 'matn'].includes(kind) && !CK.splitUnits(row.body, row.split).length) throw new Error('اكتب النص المطلوب حفظه');
-        if (kind === 'reading') {
-          row.questions = qe.get(); row.config = { quiz_size: Math.max(1, +f.quiz.value || 3) };
-          if (!row.body) throw new Error('اكتب نص القراءة');
-          if (row.questions.length < row.config.quiz_size) throw new Error(`أضف ${row.config.quiz_size} أسئلة على الأقل`);
-        }
-        if (kind === 'puzzle') {
-          row.config = { type: f.ptype.value, level: +f.level.value, quiz_size: Math.max(1, +f.quiz.value || 3) };
-          if (f.ptype.value === 'riddle') {
-            row.questions = qe.get();
-            if (row.questions.length < row.config.quiz_size) throw new Error(`أضف ${row.config.quiz_size} ألغاز على الأقل`);
-          }
-        }
-        if (isNew) await q(sb.from('tasks').insert({ ...row, family_id: c.family_id, child_id: c.id }));
+        const row = form.get();
+        if (isNew) { delete row.progress; await q(sb.from('tasks').insert({ ...row, family_id: c.family_id, child_id: c.id })); }
         else await q(sb.from('tasks').update(row).eq('id', t.id));
         await reload();
       },
@@ -492,29 +454,103 @@
   }
 
   function breakDialog(b, defKind = 'fact') {
-    const isNew = !b; b = b || { kind: defKind, title: '', body: '', options: [], answer: 0 };
-    const kind = h('select', {}, ...[['question', 'سؤال'], ['fact', 'فائدة'], ['story', 'قصة قصيرة']].map(([v, n]) => h('option', { value: v, selected: b.kind === v }, n)));
-    const title = h('input', { type: 'text', value: b.title, maxlength: 60, placeholder: 'مثال: هل تعلم؟' });
-    const bodyEl = h('textarea', { value: b.body });
-    const opts = [0, 1, 2].map((j) => h('input', { type: 'text', value: b.options[j] || '', placeholder: `الخيار ${j + 1}` }));
-    const radios = [0, 1, 2].map((j) => h('input', { type: 'radio', name: 'bans', checked: (b.answer ?? 0) === j }));
-    const optBox = h('div', { class: 'col' }, h('b', {}, 'الخيارات (حدد الصحيح)'), opts.map((o, j) => h('div', { class: 'row' }, radios[j], o)));
-    const upd = () => optBox.classList.toggle('hidden', kind.value !== 'question');
-    kind.onchange = upd; upd();
-    modal(isNew ? 'إضافة' : 'تعديل', [field('النوع', kind), field('العنوان', title), field('النص (يُقرأ في دقيقتين أو أقل)', bodyEl), optBox], {
+    const isNew = !b;
+    const form = TPL.breakForm(b || { kind: defKind });
+    modal(isNew ? 'إضافة' : 'تعديل', form.body, {
       onOk: async () => {
-        const row = { kind: kind.value, title: title.value.trim(), body: bodyEl.value.trim(), options: [], answer: null };
-        if (!row.body) throw new Error('اكتب النص');
-        if (row.kind === 'question') {
-          const o = opts.map((x) => x.value.trim()), ai = radios.findIndex((r) => r.checked);
-          if (o.filter(Boolean).length < 2 || !o[ai]) throw new Error('أدخل خيارين على الأقل وحدد الصحيح');
-          row.options = o.filter(Boolean); row.answer = row.options.indexOf(o[ai]);
-        }
+        const row = form.get();
         if (isNew) await q(sb.from('break_items').insert({ ...row, family_id: S.me.family_id }));
         else await q(sb.from('break_items').update(row).eq('id', b.id));
         await reload();
       },
     });
+  }
+
+  // ================= القوالب (الخطط الجاهزة) =================
+  function planInfo(c) {
+    if (!c.plan) return null;
+    const start = new Date(c.plan.started + 'T00:00:00'), months = c.plan.months || 1;
+    const passed = Math.max(0, (Date.now() - start) / (30.44 * 864e5));
+    const m = Math.min(months, Math.floor(passed) + 1), pct = Math.min(100, Math.round((passed / months) * 100));
+    return { title: c.plan.title, m, months, pct, done: passed >= months };
+  }
+  function planLine(c) {
+    const p = planInfo(c);
+    return p ? h('div', { class: 'small muted' }, `📚 ${p.title} — ${p.done ? 'اكتملت مدتها' : `الشهر ${p.m} من ${p.months}`}`) : null;
+  }
+
+  function applyDialog(t) {
+    const kids = S.children;
+    if (!kids.length) return toast('أضف طفلًا أولًا');
+    const who = h('select', {}, kids.map((k) => h('option', { value: k.id, selected: k.id === S.cur }, k.name)));
+    const uid = Math.random().toString(36).slice(2);
+    const add = h('input', { type: 'radio', name: 'm' + uid, checked: true }), rep = h('input', { type: 'radio', name: 'm' + uid });
+    modal('تطبيق: ' + t.title, [
+      h('p', { class: 'small' }, TPL.summary(t)),
+      field('الطفل', who),
+      h('label', { class: 'row' }, add, h('span', {}, 'إضافة إلى مهامه الحالية')),
+      h('label', { class: 'row' }, rep, h('span', {}, 'استبدال مهامه الحالية (تُوقف القديمة ولا تُحذف، ويمكن إعادة تفعيلها)')),
+      h('p', { class: 'small muted' }, 'تُضاف الفوائد إلى مكتبة الفوائد إن لم تكن موجودة. يمكنك تعديل أي مهمة بعد التطبيق من تبويب المهام.'),
+    ], { okText: 'تطبيق', onOk: async () => {
+      const child = kids.find((k) => k.id === who.value);
+      await TPL.apply(t, child, { replace: rep.checked });
+      S.cur = child.id; localStorage.setItem('ck-cur', child.id);
+      await reload(); toast(`طُبّقت الخطة على ${child.name} ✅`);
+    } });
+  }
+  const viewTpl = (t) => modal(t.title, TPL.details(t), { okText: 'تطبيق على طفل', onOk: () => { setTimeout(() => applyDialog(t)); } });
+  const saveFamilyTpl = (t) => async (row) => {
+    if (t && t.id && t.family_id) await q(sb.from('templates').update({ ...row, updated_at: new Date().toISOString() }).eq('id', t.id));
+    else await q(sb.from('templates').insert({ ...row, family_id: S.me.family_id, source_id: t?.id || null }));
+    await reload(); toast('حُفظ القالب');
+  };
+
+  function randomPlan() {
+    const age = h('input', { type: 'number', min: 3, max: 16, value: 8 });
+    modal('🎲 خطة عشوائية', [h('p', {}, 'يختار النظام مهامًا متنوعة من المكتبة تناسب عمر طفلك.'), field('عمر الطفل', age)], { okText: 'توليد', onOk: () => {
+      const a = Math.max(3, Math.min(16, +age.value || 8));
+      const pool = S.d.templates;
+      if (!pool.length) throw new Error('المكتبة فارغة حاليًا');
+      const show = () => {
+        const t = TPL.random(pool, a);
+        modal(t.title, [...TPL.details(t), h('button', { class: 'btn ghost', type: 'button', onclick: (e) => { e.target.closest('dialog').close(); setTimeout(show); } }, '🔄 توليد خطة أخرى')],
+          { okText: 'تطبيق على طفل', onOk: () => { setTimeout(() => applyDialog(t)); } });
+      };
+      setTimeout(show);
+    } });
+  }
+
+  function tplCard(t, own) {
+    return h('div', { class: 'card' },
+      h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, t.title), own ? h('span', { class: 'tag' }, 'خاص بأسرتك') : null),
+      h('div', { class: 'row wrap' }, h('span', { class: 'tag' }, '⏳ ' + TPL.durText(t.duration_months)), h('span', { class: 'tag' }, '👦 ' + TPL.ageText(t))),
+      t.description ? h('p', { class: 'small', style: 'margin:0' }, t.description.length > 180 ? t.description.slice(0, 180) + '…' : t.description) : null,
+      h('div', { class: 'small muted' }, TPL.summary(t)),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn sm', onclick: () => applyDialog(t) }, 'تطبيق على طفل'),
+        h('button', { class: 'btn ghost sm', onclick: () => viewTpl(t) }, 'التفاصيل'),
+        own ? h('button', { class: 'btn ghost sm', onclick: () => TPL.editor(t, { onSave: saveFamilyTpl(t) }) }, '✏️ تعديل')
+          : h('button', { class: 'btn ghost sm', onclick: () => TPL.editor({ ...t, id: undefined, title: t.title + ' (نسختي)' }, { heading: 'نسخة خاصة بأسرتك', onSave: saveFamilyTpl(t) }) }, '📋 نسخ وتعديل'),
+        own ? h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox(`حذف القالب «${t.title}»؟ لا يؤثر على المهام المطبّقة.`, 'حذف')) run(async () => { await q(sb.from('templates').delete().eq('id', t.id)); await reload(); }, 'حُذف القالب'); } }, '🗑') : null));
+  }
+
+  function viewTemplates(c) {
+    const p = c ? planInfo(c) : null;
+    const global = S.d.templates.filter((t) => !t.family_id), own = S.d.templates.filter((t) => t.family_id);
+    return [
+      c ? card(`📚 خطة ${c.name}`, p
+        ? [h('div', {}, h('b', {}, p.title), ' — ', p.done ? 'اكتملت مدتها 🎉' : `الشهر ${p.m} من ${p.months}`),
+          h('div', { style: 'height:8px;border-radius:4px;background:rgba(0,0,0,.1);overflow:hidden' }, h('div', { style: `height:100%;width:${p.pct}%;background:var(--pri)` })),
+          h('div', { class: 'small muted' }, 'بدأت ' + c.plan.started)]
+        : h('p', { class: 'muted small' }, 'لم تُطبَّق خطة بعد. اختر قالبًا من المكتبة، أو دع النظام يختار خطة عشوائية.')) : null,
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn', onclick: randomPlan }, '🎲 خطة عشوائية'),
+        h('button', { class: 'btn ghost', onclick: () => TPL.editor(null, { onSave: saveFamilyTpl(null) }) }, '＋ قالب جديد لأسرتك')),
+      h('h2', {}, `مكتبة القوالب (${global.length})`),
+      ...(global.length ? global.map((t) => tplCard(t, false)) : [h('p', { class: 'muted' }, 'لا توجد قوالب عامة بعد.')]),
+      own.length ? h('h2', {}, `قوالب أسرتك (${own.length})`) : null,
+      ...own.map((t) => tplCard(t, true)),
+    ];
   }
 
   // ================= الفوائد والفواصل =================
@@ -597,11 +633,6 @@
   }
 
   // ================= الأطفال والإعدادات =================
-  async function insertSamples(c) {
-    await q(sb.from('tasks').insert(SAMPLES.tasks.map((t, i) => ({ split: 'line', unit_size: 1, body: '', questions: [], config: {}, ...t, reward_min: t.reward_min || 30, family_id: c.family_id, child_id: c.id, sort: i }))));
-    if (!S.d.breaks.length) await q(sb.from('break_items').insert(SAMPLES.breaks.map((b) => ({ options: [], answer: null, ...b, family_id: c.family_id }))));
-  }
-
   function showPairCode(c, code) {
     return modal('ربط جهاز ' + c.name, [
       h('p', {}, 'ثبّت تطبيق الطفل على جهازه، ثم أدخل هذا الرمز عند أول تشغيل:'),
@@ -612,16 +643,15 @@
   function addChild() {
     const name = h('input', { type: 'text', maxlength: 30, placeholder: 'اسم الطفل' });
     const sample = h('input', { type: 'checkbox', checked: true });
-    modal('إضافة طفل', [field('الاسم', name), h('label', { class: 'switch' }, 'إضافة محتوى تمثيلي جاهز (مهام، قراءة، ألعاب، فواصل)', sample)], {
+    modal('إضافة طفل', [field('الاسم', name), h('label', { class: 'switch' }, 'اختيار خطة له من مكتبة القوالب بعد الإضافة', sample)], {
       okText: 'إضافة',
       onOk: async () => {
         if (!name.value.trim()) throw new Error('اكتب اسم الطفل');
         const c = await q(sb.from('children').insert({ family_id: S.me.family_id, name: name.value.trim() }).select().single());
-        if (sample.checked) await insertSamples(c);
         const code = await q(sb.rpc('new_pair_code', { p_child: c.id }));
         S.cur = c.id; localStorage.setItem('ck-cur', c.id);
         await reload();
-        showPairCode(c, code);
+        setTimeout(() => showPairCode(c, code).then(() => { if (sample.checked) { S.tab = 'templates'; render(); } }));
       },
     });
   }
@@ -650,27 +680,52 @@
         num('الحد الأعلى للاستخدام يوميًا (دقائق، 0 = بلا حد)', 'max_daily_min', 0, 1440),
         h('p', { class: 'small muted' }, `الحالي: ${c.max_daily_min ? hmin(c.max_daily_min) + ' ساعة' : 'بلا حد'}. عند بلوغه يُقفل الجهاز ويصلك تنبيه أحمر، ويبقى السماح المباشر منك ممكنًا.`),
         h('div', { class: 'row wrap' },
-          h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('إضافة المحتوى التمثيلي لهذا الطفل؟')) run(async () => { await insertSamples(c); await reload(); }, 'أضيف المحتوى'); } }, 'إضافة محتوى تمثيلي'),
           h('button', { class: 'btn bad sm', onclick: async () => {
             if (await confirmBox(`حذف ${c.name} وكل مهامه ورسائله نهائيًا؟ لا يمكن التراجع.`, 'حذف نهائي')) run(async () => { await q(sb.from('children').delete().eq('id', c.id)); S.cur = null; await reload(); }, 'تم الحذف');
           } }, 'حذف الطفل'))));
     }
+    const owner = S.d.members.find((m) => m.user_id === S.me.user_id)?.is_owner;
+    const passInput = () => h('input', { type: 'password', maxlength: 72, autocomplete: 'new-password', dir: 'ltr' });
+    const resetPass = (m) => {
+      const n = passInput();
+      modal('كلمة مرور جديدة لـ' + m.name, [field('كلمة المرور الجديدة (6 أحرف على الأقل)', n),
+        h('p', { class: 'small muted' }, 'أبلغه بها، ويستطيع تغييرها بعد الدخول من إعداداته.')], { onOk: async () => {
+        await CK.fn('gate', { action: 'set_password', user_id: m.user_id, password: n.value });
+        toast('تم تعيين كلمة المرور');
+      } });
+    };
     out.push(card('الأسرة: ' + (S.family?.name || ''),
-      h('div', { class: 'row between' }, h('span', {}, 'رمز الأسرة (لانضمام والد آخر)'), h('b', { class: 'pin', style: 'font-size:1.3rem' }, S.family?.code)),
-      h('p', { class: 'small muted' }, 'ينضم الوالد الآخر من تطبيق الوالدين بهذا الرمز مع الرقم السري.'),
-      S.d.members.map((m) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, '👤'), h('span', { class: 'grow' }, m.name + (m.user_id === S.me.user_id ? ' (أنت)' : '')),
-        m.user_id !== S.me.user_id ? h('button', { class: 'iconbtn', title: 'إزالة', onclick: async () => {
-          if (await confirmBox(`إزالة ${m.name} من الأسرة؟`)) run(async () => { await q(sb.from('members').delete().eq('user_id', m.user_id)); await reload(); });
-        } }, '🗑') : null)),
-      h('div', { class: 'row wrap' },
+      h('h2', { style: 'margin-top:4px' }, '👥 أولياء الأمور'),
+      S.d.members.map((m) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, m.is_owner ? '👑' : '👤'),
+        h('div', { class: 'grow' }, h('div', {}, m.name + (m.user_id === S.me.user_id ? ' (أنت)' : '')),
+          h('div', { class: 'small muted', dir: 'ltr', style: 'text-align:right' }, '@' + (m.username || '—')),
+          m.is_owner ? h('span', { class: 'tag ok' }, 'مدير الأسرة') : null),
+        owner && m.user_id !== S.me.user_id ? [
+          h('button', { class: 'iconbtn', title: 'تعيين كلمة مرور', onclick: () => resetPass(m) }, '🔑'),
+          h('button', { class: 'iconbtn', title: 'إزالة', onclick: async () => {
+            if (await confirmBox(`إزالة ${m.name} من الأسرة؟ لن يستطيع الدخول بعدها.`, 'إزالة')) run(async () => { await CK.fn('gate', { action: 'remove_parent', user_id: m.user_id }); await reload(); }, 'أُزيل ولي الأمر');
+          } }, '🗑')] : null)),
+      owner ? h('button', { class: 'btn ghost', onclick: () => {
+        const name = h('input', { type: 'text', maxlength: 30, placeholder: 'مثال: الأم' });
+        const user = h('input', { type: 'text', maxlength: 30, dir: 'ltr', autocapitalize: 'off', spellcheck: false, placeholder: 'umm_abdullah' });
+        const pass = passInput();
+        modal('إضافة ولي أمر', [field('الاسم كما يظهر للطفل', name), field('اسم المستخدم (حروف أو أرقام بلا مسافات)', user), field('كلمة مرور أولية (6 أحرف على الأقل)', pass),
+          h('p', { class: 'small muted' }, 'يدخل بها من تطبيق الوالدين على جواله، ويستطيع تغيير كلمة المرور بعد الدخول.')], { okText: 'إضافة', onOk: async () => {
+          await CK.fn('gate', { action: 'add_parent', name: name.value, username: user.value, password: pass.value });
+          await reload(); toast('أضيف ولي الأمر');
+        } }).then(() => render());
+      } }, '＋ إضافة ولي أمر') : h('p', { class: 'small muted' }, 'إضافة أولياء الأمور وإدارتهم لمدير الأسرة فقط.'),
+      h('div', { class: 'row wrap', style: 'margin-top:8px' },
         h('button', { class: 'btn ghost sm', onclick: () => {
-          const o = h('input', { type: 'password', inputmode: 'numeric', class: 'pin' }), n = h('input', { type: 'password', inputmode: 'numeric', class: 'pin' });
-          modal('تغيير الرقم السري', [field('الرقم الحالي', o), field('الرقم الجديد', n)], { onOk: async () => {
-            if (!/^\d{4,12}$/.test(n.value)) throw new Error('الرقم الجديد 4 أرقام على الأقل');
-            if (!(await q(sb.rpc('change_pin', { p_old: o.value, p_new: n.value })))) throw new Error('الرقم الحالي غير صحيح');
-            toast('تم تغيير الرقم السري');
+          const o = h('input', { type: 'password', maxlength: 72, autocomplete: 'current-password', dir: 'ltr' }), n = passInput(), n2 = passInput();
+          modal('تغيير كلمة المرور', [field('كلمة المرور الحالية', o), field('الجديدة (6 أحرف على الأقل)', n), field('تأكيد الجديدة', n2)], { onOk: async () => {
+            if (n.value.length < 6) throw new Error('كلمة المرور 6 أحرف على الأقل');
+            if (n.value !== n2.value) throw new Error('كلمتا المرور غير متطابقتين');
+            await CK.gate({ action: 'login', username: S.me.username, password: o.value }).catch(() => { throw new Error('كلمة المرور الحالية غير صحيحة'); });
+            await q(sb.auth.updateUser({ password: n.value }));
+            toast('تم تغيير كلمة المرور');
           } });
-        } }, 'تغيير الرقم السري'),
+        } }, '🔑 تغيير كلمة المرور'),
         pushOn()
           ? h('button', { class: 'btn plain sm', onclick: async () => { await disablePush(); toast('أُوقفت الإشعارات على هذا الجهاز'); render(); } }, '🔕 إيقاف الإشعارات')
           : h('button', { class: 'btn sm', onclick: async () => { await run(() => enablePush(true), 'تم تفعيل الإشعارات على هذا الجهاز 🔔'); render(); } }, '🔔 تفعيل الإشعارات'),
