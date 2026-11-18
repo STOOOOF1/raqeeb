@@ -414,7 +414,7 @@
   }
 
   function drawUpdate() {
-    if (!updEl || !updEl.isConnected) return;
+    if (!updEl) return; // يُرسم أيضًا قبل إضافته للشاشة (أول فتح لتبويب الإعدادات)
     const s = UPD.state;
     const msg = {
       idle: '', checking: 'جارٍ البحث عن تحديث…', latest: '✓ لديك أحدث إصدار',
@@ -436,6 +436,7 @@
     const info = N.info();
     updEl = h('div', {});
     drawUpdate();
+    if (UPD.state === 'idle' && N.has) setTimeout(checkUpdate, 0); // يبحث عن تحديث تلقائيًا عند فتح الإعدادات
     return [
       h('div', { class: 'card' }, h('h2', {}, '⚙️ الإعدادات'), updEl),
       h('div', { class: 'card' }, h('h2', {}, 'معلومات الجهاز'),
