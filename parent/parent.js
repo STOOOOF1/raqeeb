@@ -306,16 +306,18 @@
   // تصفير مهام اليوم: تعود كل مهامه (الرئيسية والإضافية والسريعة) كأنها لم تُنجز اليوم
   function resetTasks(c) {
     const withGrants = h('input', { type: 'checkbox', checked: true, style: 'width:20px;height:20px;accent-color:var(--pri)' });
-    modal('🔄 تصفير مهام اليوم', h('div', { class: 'col' },
+    const withUsage = h('input', { type: 'checkbox', checked: true, style: 'width:20px;height:20px;accent-color:var(--pri)' });
+    modal('🔄 تصفير مهام اليوم ووقته', h('div', { class: 'col' },
       h('p', {}, `ستعود كل مهام ${c.name} لهذا اليوم كأنها لم تُنجز: المهام الرئيسية والإضافية والسريعة، وتُحذف التسجيلات التي لم تراجعها، وتُلغى «ساعته اليومية» إن لم يبدأها.`),
       h('p', { class: 'small muted' }, 'لا يتأثر تقدّم الحفظ، ولا الوقت الذي بدأه ويجري الآن.'),
-      h('label', { class: 'row' }, withGrants, h('span', {}, 'حذف الأوقات التي كسبها اليوم ولم يبدأها بعد'))),
+      h('label', { class: 'row' }, withGrants, h('span', {}, 'حذف الأوقات التي كسبها اليوم ولم يبدأها بعد')),
+      h('label', { class: 'row' }, withUsage, h('span', {}, `تصفير وقت استخدامه اليوم (يعود إلى 0:00 من ${c.max_daily_min ? hmin(c.max_daily_min) : 'الحد'})`))),
     { okText: 'تصفير', onOk: () => run(async () => {
       const since = new Date(); since.setHours(0, 0, 0, 0);
-      const paths = await q(sb.rpc('reset_tasks', { p_child: c.id, p_day: CK.dayStr(), p_since: since.toISOString(), p_grants: withGrants.checked }));
+      const paths = await q(sb.rpc('reset_tasks', { p_child: c.id, p_day: CK.dayStr(), p_since: since.toISOString(), p_grants: withGrants.checked, p_usage: withUsage.checked }));
       (paths || []).forEach((p) => CK.removeAudio(p));
       await reload();
-    }, 'صُفّرت مهام اليوم') });
+    }, withUsage.checked ? 'صُفّرت مهام اليوم ووقته' : 'صُفّرت مهام اليوم') });
   }
 
   function viewHome(c) {
@@ -341,7 +343,7 @@
         c.force_lock
           ? h('button', { class: 'btn ok', onclick: () => run(async () => { await q(sb.from('children').update({ force_lock: false }).eq('id', c.id)); await reload(); }, 'أُلغي القفل اليدوي') }, '🔓 إلغاء القفل اليدوي')
           : h('button', { class: 'btn bad', onclick: () => run(async () => { await q(sb.from('children').update({ force_lock: true }).eq('id', c.id)); await reload(); }, 'تم قفل الجهاز') }, '🔒 قفل الآن'),
-        h('button', { class: 'btn ghost', onclick: () => resetTasks(c) }, '🔄 تصفير مهام اليوم'),
+        h('button', { class: 'btn ghost', onclick: () => resetTasks(c) }, '🔄 تصفير المهام والوقت'),
         activeParent.length ? h('button', { class: 'btn plain', onclick: () => run(async () => {
           await q(sb.from('grants').update({ status: 'cancelled' }).in('id', activeParent.map((g) => g.id))); await reload();
         }, 'أُلغي الإذن') }, 'إلغاء الإذن المباشر') : null)));

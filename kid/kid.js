@@ -179,6 +179,7 @@
       S.offset = new Date(srv).getTime() - Date.now();
       if (Math.abs(S.offset) < 5000) S.offset = 0;
       S.raw = { child, schedules, apps, yt, tasks, subs, grants, breaks };
+      checkUsageReset(child);
       // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
       S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
       applyOps();
@@ -234,7 +235,19 @@
     reloadSoon();
   }
 
-  const reportUsage = () => S.U.day && sb.rpc('report_usage', { p_day: S.U.day, p_secs: Math.floor(S.U.used / 1000) }).then(() => {}, () => {});
+  const reportUsage = () => S.U.day && sb.rpc('report_usage', { p_day: S.U.day, p_secs: Math.floor(S.U.used / 1000),
+    p_reset: localStorage.getItem('ck-usage-reset') || null }).then(() => {}, () => {});
+  // الوالد صفّر وقت الاستخدام اليوم: يعود العدّاد المحلي إلى صفر
+  function checkUsageReset(child) {
+    const r = child.usage_reset_at;
+    if (!r || localStorage.getItem('ck-usage-reset') === r) return;
+    const first = localStorage.getItem('ck-usage-reset') == null && today() !== CK.dayStr(new Date(r));
+    localStorage.setItem('ck-usage-reset', r);
+    if (first) return; // تصفير قديم من يوم سابق: لا يمس عدّاد اليوم
+    Object.assign(S.U, { used: 0, since: 0, rest: 0, warned: '' }); save('ck-usage', S.U);
+    S.lastReason = undefined;
+    toast('🔄 صفّر والداك وقتك اليوم'); N.toast('🔄 صفّر والداك وقتك اليوم');
+  }
   const heartbeat = () => { reportUsage(); sb.rpc('heartbeat', { p_info: N.info() }).then(() => {}, () => {}); };
   // تُرسل قائمة التطبيقات فقط إذا تغيّرت (تثبيت أو حذف تطبيق)، أو دائمًا عند force (طلب ولي الأمر)
   const reportApps = async (force) => {
