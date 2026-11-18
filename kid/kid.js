@@ -462,8 +462,8 @@
     const day = today();
     const count = (kinds) => S.d.subs.filter((s) => s.day === day && kinds.includes(s.kind) && s.status !== 'rejected').length;
 
-    const extraLeft = c.max_extra_per_day - count(['quran', 'matn', 'chore']);
-    const extra = S.d.tasks.filter((t) => ['quran', 'matn', 'chore'].includes(t.kind));
+    const extraLeft = c.max_extra_per_day - count(['quran', 'matn', 'chore', 'draw']);
+    const extra = S.d.tasks.filter((t) => ['quran', 'matn', 'chore', 'draw'].includes(t.kind));
     out.push(h('div', { class: 'card' }, h('h2', {}, '🕧 مهام تكسب بها نصف ساعة'),
       extraLeft <= 0 ? h('p', { class: 'tag warn' }, 'بلغت الحد اليومي لهذه المهام') : null,
       extra.length ? extra.map((t) => {
@@ -473,7 +473,7 @@
         if (pend) action = h('span', { class: 'tag warn' }, 'بانتظار الإجازة');
         else if (p?.done) action = h('span', { class: 'tag ok' }, 'أتممته 🎉');
         else if (t.kind === 'chore' && subToday(t)) action = h('span', { class: 'tag ok' }, 'تمت اليوم ✓');
-        else action = h('button', { class: 'btn sm', disabled: extraLeft <= 0, onclick: () => (t.kind === 'chore' ? openChore(t) : openHifz(t)) }, 'ابدأ');
+        else action = h('button', { class: 'btn sm', disabled: extraLeft <= 0, onclick: () => (t.kind === 'chore' ? openChore(t) : t.kind === 'draw' ? openDraw(t) : openHifz(t)) }, 'ابدأ');
         return h('div', { class: 'item' }, h('span', { class: 'avatar' }, KINDS[t.kind].ic),
           h('div', { class: 'grow' }, h('div', {}, t.title),
             h('div', { class: 'small muted' }, p ? `${KINDS[t.kind].name} · أنجزت ${p.from} من ${p.units.length}` : KINDS[t.kind].name + ` · ${t.reward_min} دقيقة`)), action);
@@ -540,6 +540,47 @@
     };
     body.append(h('div', { class: 'card soft' }, h('b', {}, label), h('p', { class: 'small' }, `احفظها جيدًا، ثم سمِّعها بصوتك لتكسب ${t.reward_min} دقيقة بعد إجازة والديك.`)), portion, stage);
     memorize();
+  }
+
+  // ---- الكتابة والرسم بالإصبع ----
+  // يرسم كل عنصر من جلسة اليوم ثم تُرسل الرسومات صورةً واحدة لوالديه؛ عند الإجازة ينتقل لما بعدها
+  function openDraw(t) {
+    const p = CK.nextPortion(t), list = p.units.slice(p.from, p.to), free = t.config?.mode === 'free';
+    const body = openOverlay('✏️ ' + t.title);
+    const images = [];
+    const step = (i) => {
+      const pd = Games.pad({ mode: free ? 'free' : 'trace', guide: list[i] });
+      const last = i === list.length - 1;
+      const next = h('button', { class: 'btn big block', onclick: () => {
+        if (pd.empty()) return toast(free ? 'ارسم أولًا ثم اضغط التالي' : 'اكتب فوق الحرف بإصبعك أولًا');
+        images[i] = pd.image();
+        if (last) review(); else step(i + 1);
+      } }, last ? 'انتهيت ✓' : 'التالي ←');
+      body.replaceChildren(
+        h('div', { class: 'card soft' }, h('b', {}, free ? `🎨 ارسم: ${list[i]}` : `✍️ اكتب: ${list[i]}`),
+          h('p', { class: 'small', style: 'margin:4px 0 0' }, (list.length > 1 ? `${i + 1} من ${list.length} · ` : '') +
+            (free ? 'ارسم بإصبعك واختر الألوان التي تحبها.' : 'مرّر إصبعك فوق الحرف الباهت بهدوء.'))),
+        pd.el, next);
+      if (S.overlay) S.overlay.scrollTop = 0;
+    };
+    const review = async () => {
+      const blob = await Games.stack(images);
+      const send = h('button', { class: 'btn big ok block', onclick: async () => {
+        send.disabled = true; send.textContent = 'جارٍ الإرسال…';
+        const ok = await run(async () => {
+          const path = await CK.uploadAudio(blob, S.me.family_id, S.me.child_id);
+          await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: 'draw', day: today(),
+            audio_path: path, portion: list.join('، '), units_from: p.from, units_to: p.to }));
+          await reload();
+        }, `أُرسل ${free ? 'رسمك' : 'ما كتبته'} لوالديك، انتظر إجازتهم 🌟`);
+        if (ok) closeOverlay(); else { send.disabled = false; send.textContent = '📤 إرسال لوالديّ'; }
+      } }, '📤 إرسال لوالديّ');
+      body.replaceChildren(h('p', { class: 'center' }, 'أحسنت! هذا ما رسمته:'),
+        h('img', { src: URL.createObjectURL(blob), alt: '', style: 'width:100%;max-width:440px;margin:0 auto;display:block;border-radius:12px;border:1.5px solid var(--line)' }),
+        h('p', { class: 'small muted center' }, `بعد إجازة والديك تكسب ${t.reward_min} دقيقة.`), send,
+        h('button', { class: 'btn plain block', onclick: () => { images.length = 0; step(0); } }, '↺ أعد الرسم'));
+    };
+    step(0);
   }
 
   function openChore(t) {

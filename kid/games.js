@@ -184,5 +184,74 @@ const Games = (() => {
     });
   }
 
-  return { quiz, math, memory, watch, watchedToday };
+  // ---------- لوحة الرسم بالإصبع ----------
+  // mode: trace (حرف أو كلمة باهتة يتتبعها الطفل على أسطر كتابة) أو free (رسم حر بألوان)
+  // يعيد { el, empty(): لم يرسم شيئًا, image(): canvas مركّب بالخلفية والرسم }
+  const SZ = 600;
+  function pad({ mode, guide }) {
+    const mk = () => h('canvas', { width: SZ, height: SZ, style: 'position:absolute;inset:0;width:100%;height:100%' });
+    const bg = mk(), ink = mk();
+    ink.style.touchAction = 'none';
+    const strokes = []; let cur = null;
+    const colors = mode === 'free' ? ['#1d2733', '#dc2626', '#f59e0b', '#16a34a', '#2563eb', '#9333ea', '#a16207'] : ['#1d4ed8'];
+    let color = colors[0], width = mode === 'free' ? 10 : 18;
+
+    // الخلفية: أسطر كتابة، والحرف باهتًا بحجم يملأ اللوحة
+    const b = bg.getContext('2d');
+    b.fillStyle = '#fff'; b.fillRect(0, 0, SZ, SZ);
+    if (mode !== 'free') {
+      b.strokeStyle = '#e5e7eb'; b.lineWidth = 2;
+      for (const y of [150, 300, 450]) { b.beginPath(); b.moveTo(20, y); b.lineTo(SZ - 20, y); b.stroke(); }
+      b.strokeStyle = '#fca5a5'; b.setLineDash([10, 10]); b.beginPath(); b.moveTo(20, 390); b.lineTo(SZ - 20, 390); b.stroke(); b.setLineDash([]);
+      let fs = 420;
+      const font = (n) => `${n}px "Amiri", "Noto Naskh Arabic", "Traditional Arabic", "Segoe UI", serif`;
+      b.font = font(fs); b.direction = 'rtl';
+      while (fs > 60 && b.measureText(guide).width > SZ - 60) { fs -= 20; b.font = font(fs); }
+      b.textAlign = 'center'; b.textBaseline = 'alphabetic'; b.fillStyle = 'rgba(15,118,110,.16)';
+      b.fillText(guide, SZ / 2, 390);
+      b.strokeStyle = 'rgba(15,118,110,.35)'; b.lineWidth = 2; b.setLineDash([6, 8]); b.strokeText(guide, SZ / 2, 390); b.setLineDash([]);
+    }
+
+    const c = ink.getContext('2d');
+    const paint = () => {
+      c.clearRect(0, 0, SZ, SZ); c.lineCap = 'round'; c.lineJoin = 'round';
+      for (const s of strokes) {
+        c.strokeStyle = s.color; c.lineWidth = s.width; c.beginPath();
+        s.pts.forEach(([x, y], i) => (i ? c.lineTo(x, y) : c.moveTo(x, y)));
+        if (s.pts.length === 1) c.lineTo(s.pts[0][0] + 0.1, s.pts[0][1]);
+        c.stroke();
+      }
+    };
+    const pos = (e) => { const r = ink.getBoundingClientRect(); return [((e.clientX - r.left) / r.width) * SZ, ((e.clientY - r.top) / r.height) * SZ]; };
+    ink.addEventListener('pointerdown', (e) => { e.preventDefault(); ink.setPointerCapture(e.pointerId); cur = { color, width, pts: [pos(e)] }; strokes.push(cur); paint(); });
+    ink.addEventListener('pointermove', (e) => { if (!cur) return; e.preventDefault(); cur.pts.push(pos(e)); paint(); });
+    const end = () => { cur = null; };
+    ink.addEventListener('pointerup', end); ink.addEventListener('pointercancel', end);
+
+    const swatches = colors.length > 1 ? h('div', { class: 'row wrap', style: 'justify-content:center' }, colors.map((col) => {
+      const sw = h('button', { type: 'button', title: 'لون', style: `width:34px;height:34px;border-radius:50%;border:3px solid ${col === color ? '#000' : '#fff'};background:${col};box-shadow:0 0 0 1px #ccc;cursor:pointer`,
+        onclick: () => { color = col; [...swatches.children].forEach((x) => { x.style.borderColor = '#fff'; }); sw.style.borderColor = '#000'; } });
+      return sw;
+    })) : null;
+    const el = h('div', { class: 'col' },
+      h('div', { style: 'position:relative;width:100%;max-width:440px;aspect-ratio:1;margin:0 auto;border:2px solid var(--line);border-radius:16px;overflow:hidden;background:#fff' }, bg, ink),
+      swatches,
+      h('div', { class: 'row', style: 'justify-content:center' },
+        h('button', { class: 'btn plain sm', type: 'button', onclick: () => { strokes.pop(); paint(); } }, '↶ تراجع'),
+        h('button', { class: 'btn plain sm', type: 'button', onclick: () => { strokes.length = 0; paint(); } }, '🧽 مسح')));
+    return {
+      el,
+      empty: () => !strokes.some((s) => s.pts.length > 3),
+      image: () => { const out = h('canvas', { width: SZ, height: SZ }); const o = out.getContext('2d'); o.drawImage(bg, 0, 0); o.drawImage(ink, 0, 0); return out; },
+    };
+  }
+  // يجمع عدة رسومات في صورة واحدة (عمودًا) بحجم مناسب للرفع
+  function stack(images) {
+    const s = images.length > 2 ? 400 : SZ, out = h('canvas', { width: s, height: s * images.length });
+    const o = out.getContext('2d');
+    images.forEach((im, i) => { o.drawImage(im, 0, i * s, s, s); if (i) { o.fillStyle = '#e4dfd3'; o.fillRect(0, i * s - 2, s, 4); } });
+    return new Promise((res) => out.toBlob(res, 'image/png'));
+  }
+
+  return { quiz, math, memory, watch, watchedToday, pad, stack };
 })();

@@ -97,7 +97,8 @@ const CK = (() => {
   const WEEKDAYS = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
   const KINDS = {
     main: { name: 'مهمة رئيسية', ic: '⭐' }, quran: { name: 'حفظ قرآن', ic: '📖' }, matn: { name: 'حفظ متن', ic: '📜' },
-    chore: { name: 'مهمة منزلية', ic: '🧹' }, reading: { name: 'قراءة واختبار', ic: '📚' }, puzzle: { name: 'لعبة ذهنية', ic: '🧩' },
+    chore: { name: 'مهمة منزلية', ic: '🧹' }, draw: { name: 'كتابة ورسم', ic: '✏️' },
+    reading: { name: 'قراءة واختبار', ic: '📚' }, puzzle: { name: 'لعبة ذهنية', ic: '🧩' },
   };
 
   // ---------- تجزئة النصوص ----------
@@ -248,7 +249,8 @@ const CK = (() => {
     };
   }
   async function uploadAudio(blob, familyId, childId) {
-    const ext = blob.type.includes('mp4') ? 'm4a' : 'webm';
+    // الملف نفسه يحمل التسجيلات الصوتية ورسومات الطفل (PNG) في مجلد الأسرة
+    const ext = blob.type.includes('png') ? 'png' : blob.type.includes('mp4') ? 'm4a' : 'webm';
     const path = `${familyId}/${childId}/${crypto.randomUUID()}.${ext}`;
     await q(sb.storage.from('audio').upload(path, blob, { contentType: blob.type.split(';')[0] }));
     return path;
@@ -260,6 +262,12 @@ const CK = (() => {
   // مشغل يحمّل الملف عند أول ضغطة
   function audioPlayer(path) {
     const box = h('div', {});
+    if (/\.png$/.test(path)) { // رسم الطفل: يُعرض مباشرة
+      const img = h('img', { alt: 'رسم الطفل', style: 'width:100%;max-width:420px;border-radius:12px;border:1.5px solid var(--line);background:#fff' });
+      audioUrl(path).then((u) => { img.src = u; }, () => box.replaceChildren(h('span', { class: 'small muted' }, 'تعذر تحميل الرسم')));
+      box.append(img);
+      return box;
+    }
     const btn = h('button', { class: 'btn sm plain', type: 'button', onclick: async () => {
       btn.disabled = true; btn.textContent = '…';
       try {

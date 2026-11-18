@@ -130,7 +130,9 @@
   function viewTemplates() {
     return [
       card(null, h('p', { class: 'small', style: 'margin:0' }, 'القوالب العامة تظهر لكل الأسر في «مكتبة القوالب»، ويستطيع ولي الأمر تطبيقها على طفله أو نسخها وتعديلها لأسرته. القالب الموقوف يختفي من المكتبة دون حذفه. الخطة العشوائية تُولَّد من عناصر القوالب المفعّلة.'),
-        h('button', { class: 'btn', onclick: () => TPL.editor(null, { onSave: saveTpl(null) }) }, '＋ قالب جديد')),
+        h('div', { class: 'row wrap' },
+          h('button', { class: 'btn', onclick: () => TPL.editor(null, { onSave: saveTpl(null) }) }, '＋ قالب جديد'),
+          h('button', { class: 'btn ghost', onclick: () => TPL.importDialog({ onSave: saveTpl(null) }) }, '📥 استيراد قالب'))),
       ...S.templates.map((t) => h('div', { class: 'card' + (t.active ? '' : ' warn') },
         h('div', { class: 'row between' }, h('h2', { style: 'margin:0' }, t.title), t.active ? h('span', { class: 'tag ok' }, 'ظاهر') : h('span', { class: 'tag warn' }, 'موقوف')),
         h('div', { class: 'row wrap' }, h('span', { class: 'tag' }, '⏳ ' + TPL.durText(t.duration_months)), h('span', { class: 'tag' }, '👦 ' + TPL.ageText(t))),

@@ -337,7 +337,7 @@
           h('div', { class: 'row' }, h('span', { class: 'avatar' }, KINDS[s.kind]?.ic || '✅'),
             h('div', { class: 'grow' }, h('b', {}, t?.title || 'مهمة'),
               h('div', { class: 'small muted' }, `${ch?.name || ''} · ${KINDS[s.kind]?.name || ''} · ${clock(s.created_at)}`))),
-          s.portion ? h('details', {}, h('summary', { class: 'small' }, 'عرض المقطع المطلوب'), h('div', { class: 'portion', style: 'font-size:1rem' }, s.portion)) : null,
+          s.portion && s.kind === 'draw' ? h('div', { class: 'small' }, 'المطلوب: ' + s.portion) : s.portion ? h('details', {}, h('summary', { class: 'small' }, 'عرض المقطع المطلوب'), h('div', { class: 'portion', style: 'font-size:1rem' }, s.portion)) : null,
           s.audio_path ? CK.audioPlayer(s.audio_path) : null,
           h('div', { class: 'row' },
             h('button', { class: 'btn ok grow', onclick: () => review(s, true) }, s.kind === 'main' ? '✓ تأكيد' : `✓ إجازة (${t?.reward_min || 30} د)`),
@@ -440,11 +440,11 @@
   }
 
   // ================= المهام =================
-  const TASK_TABS = [['main', 'الرئيسية', ['main']], ['extra', 'نصف ساعة', ['quran', 'matn', 'chore']],
+  const TASK_TABS = [['main', 'الرئيسية', ['main']], ['extra', 'نصف ساعة', ['quran', 'matn', 'chore', 'draw']],
     ['quick', 'سريعة (ربع ساعة)', ['reading', 'puzzle']]];
   const TASK_HELP = {
     main: 'مهام يومية لا يُفتح الجهاز في وقته الرسمي حتى يُنجزها الطفل وتصلك للمتابعة. يمكنك إرفاق مقطع يوتيوب وأسئلة: يشاهده كاملًا ثم يُختبر.',
-    extra: 'يسجّل الطفل صوته بالحفظ (أو يبلّغ بإنجاز المهمة المنزلية)، وبعد إجازتك يحصل على الوقت كاملًا مع فواصل قصيرة.',
+    extra: 'يسجّل الطفل صوته بالحفظ، أو يكتب الحروف ويرسم بإصبعه فيصلك الرسم صورةً، أو يبلّغ بإنجاز المهمة المنزلية، وبعد إجازتك يحصل على الوقت كاملًا مع فواصل قصيرة.',
     quick: 'تُصحَّح تلقائيًا: يقرأ نصًا أو يشاهد مقطع يوتيوب ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
   };
 
@@ -554,7 +554,8 @@
         : h('p', { class: 'muted small' }, 'لم تُطبَّق خطة بعد. اختر قالبًا من المكتبة، أو دع النظام يختار خطة عشوائية.')) : null,
       h('div', { class: 'row wrap' },
         h('button', { class: 'btn', onclick: randomPlan }, '🎲 خطة عشوائية'),
-        h('button', { class: 'btn ghost', onclick: () => TPL.editor(null, { onSave: saveFamilyTpl(null) }) }, '＋ قالب جديد لأسرتك')),
+        h('button', { class: 'btn ghost', onclick: () => TPL.editor(null, { onSave: saveFamilyTpl(null) }) }, '＋ قالب جديد لأسرتك'),
+        h('button', { class: 'btn ghost', onclick: () => TPL.importDialog({ onSave: saveFamilyTpl(null) }) }, '📥 استيراد قالب')),
       h('h2', {}, `مكتبة القوالب (${global.length})`),
       ...(global.length ? global.map((t) => tplCard(t, false)) : [h('p', { class: 'muted' }, 'لا توجد قوالب عامة بعد.')]),
       own.length ? h('h2', {}, `قوالب أسرتك (${own.length})`) : null,
@@ -619,6 +620,7 @@
           else if (kind === 'main' && t.config?.yt) sub = `🎬 مقطع و${t.questions.length} سؤال`;
           else if (kind === 'puzzle') sub = ({ math: 'حساب ذهني', memory: 'لعبة الذاكرة', riddle: 'ألغاز' }[t.config.type] || '') + ` · ${t.reward_min} دقيقة`;
           else if (kind === 'chore') sub = `${t.reward_min} دقيقة`;
+          else if (kind === 'draw') { const p = CK.nextPortion(t); sub = (t.config?.mode === 'free' ? 'رسم حر' : 'كتابة') + ' · ' + (p.done ? 'أتمّها 🎉' : `أنجز ${p.from} من ${p.units.length} · ${t.reward_min} دقيقة`); }
           return h('div', { class: 'item' }, h('div', { class: 'grow' }, h('div', {}, t.title), sub ? h('div', { class: 'small muted' }, sub) : null),
             toggle('tasks', t), h('button', { class: 'iconbtn', onclick: () => taskDialog(c, kind, t) }, '✏️'), h('button', { class: 'iconbtn', onclick: del('tasks', t.id) }, '🗑'));
         }) : h('p', { class: 'muted small' }, 'لا توجد مهام بعد.')));
