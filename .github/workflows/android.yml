@@ -1,0 +1,85 @@
+# يبني تطبيق الطفل (أندرويد) ويوقّعه، وعلى main ينشره في Releases باسم raqeeb.apk
+# رابط ثابت لأحدث نسخة (يستخدمه رمز QR): https://github.com/STOOOOF1/raqeeb/releases/latest/download/raqeeb.apk
+name: Android
+
+on:
+  push:
+    paths:
+      - "android/**"
+      - "kid/**"
+      - "shared/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # نشر الإصدار
+  id-token: write   # رمز OIDC لجلب مفتاح التوقيع من دالة ci في Supabase
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # بصمة شهادة التوقيع (SHA-256، base64url) — يجب أن تطابق ما في رمز QR داخل parent.js
+  SIGNATURE_CHECKSUM: EOlSKjuqxEkjiP1pbyhu6CQsbFauUnSU3NscjneGeZk
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+
+      - name: Fetch signing key
+        run: |
+          set -euo pipefail
+          OIDC=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=raqeeb-ci" | jq -r .value)
+          RESP=$(curl -sSf -X POST -H "x-github-oidc: $OIDC" \
+            https://tkjlrruadxcbllplapuz.supabase.co/functions/v1/ci)
+          PASS=$(echo "$RESP" | jq -r .password)
+          echo "::add-mask::$PASS"
+          echo "$RESP" | jq -r .keystore | base64 -d > "$RUNNER_TEMP/release.p12"
+          echo "RAQEEB_KEYSTORE=$RUNNER_TEMP/release.p12" >> "$GITHUB_ENV"
+          echo "RAQEEB_KEYSTORE_PASS=$PASS" >> "$GITHUB_ENV"
+
+      - name: Build
+        env:
+          RAQEEB_VERSION_CODE: ${{ github.run_number }}
+        run: gradle -p android --no-daemon assembleRelease
+
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          APK=android/app/build/outputs/apk/release/app-release.apk
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/apksigner" verify --print-certs "$APK" | tee certs.txt
+          SUM=$(grep -m1 'SHA-256 digest' certs.txt | awk '{print $NF}' | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
+          echo "checksum: $SUM"
+          test "$SUM" = "$SIGNATURE_CHECKSUM"
+          cp "$APK" raqeeb.apk
+          rm -f "$RUNNER_TEMP/release.p12"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: raqeeb-apk
+          path: raqeeb.apk
+
+      - name: Publish release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-${{ github.run_number }}
+          name: تطبيق الطفل ${{ github.run_number }}
+          body: |
+            تطبيق «جهازي» لجهاز الطفل. للتثبيت كمالك للجهاز استعمل رمز QR من تطبيق الوالدين (الإعدادات ← تجهيز جهاز جديد).
+          files: raqeeb.apk
+          make_latest: true
