@@ -37,6 +37,56 @@ const TPL = (() => {
     };
   }
 
+  // ---------- حقل مقطع يوتيوب (اختياري) ----------
+  // يعيد { el, has(): هل وُضع رابط, get(): {id, start?, end?} أو null بعد التحقق, onTitle }
+  function videoBox(yt, onTitle) {
+    yt = yt || {};
+    const url = h('input', { type: 'url', dir: 'ltr', placeholder: 'https://youtu.be/…', value: yt.id ? `https://youtu.be/${yt.id}` : '' });
+    const from = h('input', { type: 'text', dir: 'ltr', inputmode: 'numeric', placeholder: '0:00', value: yt.start ? CK.fmtTime(yt.start) : '' });
+    const to = h('input', { type: 'text', dir: 'ltr', inputmode: 'numeric', placeholder: 'حتى النهاية', value: yt.end ? CK.fmtTime(yt.end) : '' });
+    const prev = h('div', { class: 'ytprev hidden' });
+    let bad = null, seq = 0;
+    const check = () => {
+      const v = url.value.trim(), id = CK.ytId(v), my = ++seq;
+      bad = null;
+      if (!v) { prev.classList.add('hidden'); return; }
+      prev.classList.remove('hidden');
+      if (!id) { bad = 'الرابط ليس رابط مقطع يوتيوب صحيحًا'; prev.replaceChildren(h('div', { class: 'small bad-t' }, '⚠️ ' + bad)); return; }
+      const st = CK.ytStart(v); if (st && !from.value) from.value = CK.fmtTime(st);
+      const cap = h('div', { class: 'small muted' }, 'جارٍ التحقق من المقطع…');
+      prev.replaceChildren(h('img', { src: CK.ytThumb(id), alt: '' }), cap);
+      CK.fn('yt', { action: 'video', id }).then((r) => {
+        if (my !== seq) return;
+        cap.className = 'small'; cap.textContent = '✓ ' + r.title;
+        if (onTitle) onTitle(r.title);
+      }, (e) => {
+        if (my !== seq) return;
+        if (/التضمين|خاص|غير موجود/.test(e.message)) { bad = e.message; cap.className = 'small bad-t'; cap.textContent = '⚠️ ' + bad; }
+        else { cap.className = 'small muted'; cap.textContent = 'تعذر التحقق من المقطع الآن، سيُحفظ كما هو.'; }
+      });
+    };
+    url.addEventListener('change', check); url.addEventListener('paste', () => setTimeout(check, 0));
+    if (yt.id) check();
+    return {
+      el: h('div', { class: 'col' }, field('رابط مقطع يوتيوب', url), prev,
+        h('div', { class: 'row' }, field('ابدأ من (اختياري)', from), field('انتهِ عند (اختياري)', to)),
+        h('div', { class: 'small muted' }, 'يشاهد الطفل المقطع كاملًا (لا يستطيع تقديمه)، ثم تظهر له الأسئلة.')),
+      has: () => !!url.value.trim(),
+      get: () => {
+        const v = url.value.trim();
+        if (!v) return null;
+        const id = CK.ytId(v);
+        if (!id) throw new Error('رابط يوتيوب غير صحيح');
+        if (bad) throw new Error(bad);
+        const s = CK.parseTime(from.value), e = CK.parseTime(to.value);
+        if (Number.isNaN(s) || Number.isNaN(e)) throw new Error('اكتب الوقت بصيغة دقائق:ثواني مثل 1:30');
+        if (e && e <= s) throw new Error('وقت النهاية يجب أن يكون بعد وقت البداية');
+        const out = { id }; if (s) out.start = s; if (e) out.end = e;
+        return out;
+      },
+    };
+  }
+
   // ---------- نموذج مهمة (يُستخدم لمهام الطفل ولعناصر القالب) ----------
   // يعيد { body: عناصر النموذج, get(): الصف بعد التحقق }
   function taskForm(kind, t, opts = {}) {
@@ -74,12 +124,19 @@ const TPL = (() => {
     f.body.oninput = f.unit.oninput = f.words.oninput = f.split.onchange = upd; f.ptype.onchange = updPuzzle;
     const secHint = h('div', { class: 'small muted' }, 'للتوزيع الذكي: اكتب سطرًا يبدأ بـ # قبل كل سورة أو باب (مثل: # سورة الناس)، فلا تعبر الجلسة حدوده.');
 
+    const vb = ['main', 'reading'].includes(kind) ? videoBox(t.config.yt, (name) => { if (!f.title.value.trim()) f.title.value = name.slice(0, 80); }) : null;
     const body = [field(kind === 'main' ? 'المهمة' : 'عنوان المهمة', f.title)];
-    if (kind === 'main') body.push(field('تفصيل (اختياري)', f.body));
+    if (kind === 'main') {
+      body.push(field('تفصيل (اختياري)', f.body),
+        h('details', { class: 'qbox', open: !!t.config.yt },
+          h('summary', {}, h('b', {}, '🎬 مقطع وأسئلة (اختياري)')),
+          h('div', { class: 'col', style: 'margin-top:8px' }, vb.el,
+            h('b', {}, 'الأسئلة على المقطع (يُفضّل أكثر من عدد أسئلة الاختبار لتتغير عند الإعادة)'), qe.el, field('عدد أسئلة كل اختبار', f.quiz))));
+    }
     if (kind === 'quran') body.push(field('الآيات (كل آية في سطر)', f.body), secHint, field('أقصى عدد آيات في الجلسة', f.unit), field('حد الكلمات في الجلسة (0 = بلا حد)', f.words), info);
     if (kind === 'matn') body.push(field('نوع المتن', f.split), field('نص المتن', f.body), secHint, field('أقصى عدد أبيات أو جمل في الجلسة', f.unit), field('حد الكلمات في الجلسة (0 = بلا حد)', f.words), info);
     if (kind === 'chore') body.push(field('وصف المهمة (اختياري)', f.body));
-    if (kind === 'reading') body.push(field('النص المطلوب قراءته', f.body), h('b', {}, 'بنك الأسئلة (يُفضّل أكثر من عدد أسئلة الاختبار لتتغير عند الإعادة)'), qe.el, field('عدد أسئلة كل اختبار', f.quiz));
+    if (kind === 'reading') body.push(vb.el, field('النص المطلوب قراءته (اختياري إذا وضعت مقطعًا)', f.body), h('b', {}, 'بنك الأسئلة (يُفضّل أكثر من عدد أسئلة الاختبار لتتغير عند الإعادة)'), qe.el, field('عدد أسئلة كل اختبار', f.quiz));
     if (kind === 'puzzle') body.push(field('نوع اللعبة', f.ptype), levelBox, riddleBox);
     if (kind !== 'main') body.push(field('مدة الفتح بالدقائق', f.reward));
     if (opts.allowReset && ['quran', 'matn'].includes(kind) && progress > 0) {
@@ -97,8 +154,14 @@ const TPL = (() => {
       }
       if (kind === 'reading') {
         row.questions = qe.get(); row.config = { quiz_size: Math.max(1, +f.quiz.value || 3) };
-        if (!row.body) throw new Error('اكتب نص القراءة');
+        const yt = vb.get(); if (yt) row.config.yt = yt;
+        if (!row.body && !yt) throw new Error('اكتب نص القراءة أو ضع رابط مقطع');
         if (row.questions.length < row.config.quiz_size) throw new Error(`أضف ${row.config.quiz_size} أسئلة على الأقل`);
+      }
+      if (kind === 'main' && vb.has()) {
+        const yt = vb.get();
+        row.questions = qe.get(); row.config = { yt, quiz_size: Math.max(1, +f.quiz.value || 3) };
+        if (row.questions.length < row.config.quiz_size) throw new Error(`أضف ${row.config.quiz_size} أسئلة على المقطع على الأقل`);
       }
       if (kind === 'puzzle') {
         row.config = { type: f.ptype.value, level: +f.level.value, quiz_size: Math.max(1, +f.quiz.value || 3) };

@@ -3,7 +3,10 @@ package app.contkid.kid
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -43,7 +46,15 @@ class MainActivity : Activity() {
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var pendingAudio: PermissionRequest? = null
-    private var appsJson: String? = null
+    @Volatile private var appsJson: String? = null
+
+    // تثبيت تطبيق أو حذفه أو تحديثه: نُسقط القائمة المحفوظة ونبلّغ الواجهة لترسل الجديدة
+    private val pkgReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            appsJson = null
+            if (::web.isInitialized) web.post { web.evaluateJavascript("window.onAppsChanged && window.onAppsChanged()", null) }
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -68,6 +79,12 @@ class MainActivity : Activity() {
         web.addJavascriptInterface(Bridge(), "AndroidBridge")
         web.webViewClient = Client()
         web.webChromeClient = Chrome()
+        registerReceiver(pkgReceiver, IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addDataScheme("package")
+        })
         savePairCode(this, intent) // PROVISIONING_SUCCESSFUL قد يحمل الإضافات أيضًا
         if (savedInstanceState != null) web.restoreState(savedInstanceState) else web.loadUrl(START)
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED && !Policy.isOwner(this)) {
@@ -87,6 +104,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
+        runCatching { unregisterReceiver(pkgReceiver) }
         web.destroy()
         super.onDestroy()
     }
@@ -117,6 +135,10 @@ class MainActivity : Activity() {
 
     // ================= الجسر =================
     inner class Bridge {
+        /** يُسقط القائمة المحفوظة فيعيد getApps القراءة من النظام */
+        @JavascriptInterface
+        fun refreshApps() { appsJson = null }
+
         @JavascriptInterface
         fun getApps(): String {
             appsJson?.let { return it }

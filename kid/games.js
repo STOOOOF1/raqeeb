@@ -103,5 +103,86 @@ const Games = (() => {
     });
   }
 
-  return { quiz, math, memory };
+  // ---------- مشاهدة مقطع يوتيوب حتى نهايته (بلا تقديم) ----------
+  let apiP = null;
+  function ytApi() {
+    if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
+    return apiP || (apiP = new Promise((resolve, reject) => {
+      const prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => { if (prev) prev(); resolve(window.YT); };
+      const s = document.createElement('script');
+      s.src = 'https://www.youtube.com/iframe_api';
+      const fail = () => { apiP = null; s.remove(); reject(new Error('net')); };
+      s.onerror = fail;
+      document.head.append(s);
+      setTimeout(() => { if (!(window.YT && window.YT.Player)) fail(); }, 20000);
+    }));
+  }
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem(k)) || null; } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* التخزين غير متاح */ } },
+  };
+  const watchKey = (taskId) => 'ck_yt_' + taskId;
+  // هل أكمل الطفل مشاهدة مقطع هذه المهمة اليوم؟
+  const watchedToday = (taskId) => { const s = store.get(watchKey(taskId)); return !!(s && s.d === CK.dayStr() && s.done); };
+
+  // يرسم المشغّل داخل box؛ يعيد Promise<boolean>: true عند إكمال المشاهدة، false عند تعذّر التشغيل
+  function watch(box, yt, taskId) {
+    return new Promise((resolve) => {
+      const S0 = yt.start || 0, E0 = yt.end || 0, key = watchKey(taskId), day = CK.dayStr();
+      const saved = store.get(key);
+      let max = saved && saved.d === day && saved.max > S0 ? saved.max : S0;
+      const fill = h('i'), label = h('span', {}, 'جارٍ تحميل المقطع…');
+      const holder = h('div');
+      box.replaceChildren(
+        h('div', { class: 'player' }, holder),
+        h('div', { class: 'watchbar' }, fill), h('p', { class: 'small muted center' }, label),
+        h('p', { class: 'small center' }, '👀 شاهد المقطع حتى نهايته، وبعدها تظهر لك الأسئلة.'));
+      const showErr = (msg) => { box.replaceChildren(h('div', { class: 'card bad' }, h('b', {}, msg), h('p', { class: 'small' }, 'أغلق هذه النافذة وجرّب لاحقًا.'))); resolve(false); };
+
+      ytApi().then((YT) => {
+        if (!box.isConnected) return;
+        let timer = null, finished = false, player;
+        const endT = () => E0 || (player.getDuration ? player.getDuration() : 0);
+        const save = (done) => store.set(key, { d: day, max, done: !!done });
+        const draw = () => {
+          const e = endT(); if (!e) return;
+          const pct = Math.min(100, Math.max(0, ((max - S0) / (e - S0)) * 100));
+          fill.style.width = pct + '%';
+          label.textContent = `شاهدت ${Math.floor(pct)}% · ${CK.fmtTime(max - S0)} من ${CK.fmtTime(e - S0)}`;
+        };
+        const finish = () => {
+          if (finished) return; finished = true;
+          clearInterval(timer); max = endT(); save(true); draw();
+          try { player.destroy(); } catch { /* */ }
+          resolve(true);
+        };
+        const tick = () => {
+          if (!box.isConnected) { clearInterval(timer); save(false); try { player.destroy(); } catch { /* */ } return; }
+          if (!player.getCurrentTime) return;
+          const cur = player.getCurrentTime(), e = endT();
+          if (cur > max + 3) player.seekTo(max, true); // منع التقديم
+          else if (cur > max) { max = cur; save(false); }
+          draw();
+          if (e && max >= e - 1) finish();
+        };
+        player = new YT.Player(holder, {
+          host: 'https://www.youtube-nocookie.com',
+          videoId: yt.id,
+          playerVars: { start: Math.floor(Math.max(S0, max - 2)), ...(E0 ? { end: E0 } : {}), autoplay: 1, rel: 0, playsinline: 1, modestbranding: 1, disablekb: 1, fs: 1, iv_load_policy: 3 },
+          events: {
+            onReady: () => { draw(); timer = setInterval(tick, 500); },
+            onStateChange: (ev) => {
+              if (ev.data !== YT.PlayerState.ENDED) return;
+              const e = endT();
+              if (e && max >= e - 4) finish(); else player.seekTo(max, true);
+            },
+            onError: (ev) => { clearInterval(timer); showErr([101, 150].includes(ev.data) ? 'هذا المقطع لا يعمل داخل التطبيق، أخبر والديك.' : 'تعذر تشغيل المقطع، أخبر والديك.'); },
+          },
+        });
+      }, () => { if (box.isConnected) showErr('تحتاج اتصالًا بالإنترنت لمشاهدة المقطع.'); });
+    });
+  }
+
+  return { quiz, math, memory, watch, watchedToday };
 })();

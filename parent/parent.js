@@ -417,8 +417,17 @@
     } }, 'إضافة');
     const chans = mine(S.d.yt, c);
 
+    // يطلب من جهاز الطفل إعادة قراءة تطبيقاته (لما ثُبّت بعد رقيب)؛ تصل القائمة الجديدة لحظيًا
+    const refreshBtn = h('button', { class: 'btn', onclick: async () => {
+      refreshBtn.disabled = true;
+      await run(() => q(sb.from('children').update({ apps_refresh_at: new Date().toISOString() }).eq('id', c.id)),
+        'طُلب التحديث من جهاز الطفل — تظهر التطبيقات الجديدة خلال ثوانٍ إن كان متصلًا');
+      setTimeout(() => { refreshBtn.disabled = false; }, 5000);
+    } }, '🔄 تحديث قائمة التطبيقات');
+
     return [
       card(`التطبيقات المسموحة (${allowed} من ${S.d.apps.length})`,
+        h('div', { class: 'row' }, h('p', { class: 'small muted grow' }, 'ثبّت تطبيقًا جديدًا على جهاز الطفل ولم يظهر؟ اضغط التحديث.'), refreshBtn),
         S.d.apps.length ? [search, list] : h('p', { class: 'muted' }, 'ستظهر هنا تطبيقات جهاز الطفل بعد ربطه وتشغيل التطبيق عليه.')),
       card('قنوات يوتيوب المسموحة',
         h('p', { class: 'small muted' }, 'تطبيق يوتيوب الأصلي يبقى محجوبًا؛ الطفل يشاهد هذه القنوات فقط من داخل تطبيقه.'),
@@ -434,9 +443,9 @@
   const TASK_TABS = [['main', 'الرئيسية', ['main']], ['extra', 'نصف ساعة', ['quran', 'matn', 'chore']],
     ['quick', 'سريعة (ربع ساعة)', ['reading', 'puzzle']]];
   const TASK_HELP = {
-    main: 'مهام يومية لا يُفتح الجهاز في وقته الرسمي حتى يُنجزها الطفل وتصلك للمتابعة.',
+    main: 'مهام يومية لا يُفتح الجهاز في وقته الرسمي حتى يُنجزها الطفل وتصلك للمتابعة. يمكنك إرفاق مقطع يوتيوب وأسئلة: يشاهده كاملًا ثم يُختبر.',
     extra: 'يسجّل الطفل صوته بالحفظ (أو يبلّغ بإنجاز المهمة المنزلية)، وبعد إجازتك يحصل على الوقت كاملًا مع فواصل قصيرة.',
-    quick: 'تُصحَّح تلقائيًا: يقرأ ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
+    quick: 'تُصحَّح تلقائيًا: يقرأ نصًا أو يشاهد مقطع يوتيوب ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
   };
 
   // نماذج التحرير مشتركة مع القوالب (shared/tpl.js)
@@ -606,7 +615,8 @@
         rows.length ? rows.map((t) => {
           let sub = '';
           if (['quran', 'matn'].includes(kind)) { const p = CK.nextPortion(t); sub = p.done ? 'أتمّ الحفظ 🎉' : `أنجز ${p.from} من ${p.units.length} · ${t.unit_size} لكل ${t.reward_min} دقيقة`; }
-          else if (kind === 'reading') sub = `${t.questions.length} سؤال في البنك · ${t.reward_min} دقيقة`;
+          else if (kind === 'reading') sub = (t.config?.yt ? '🎬 مقطع · ' : '') + `${t.questions.length} سؤال في البنك · ${t.reward_min} دقيقة`;
+          else if (kind === 'main' && t.config?.yt) sub = `🎬 مقطع و${t.questions.length} سؤال`;
           else if (kind === 'puzzle') sub = ({ math: 'حساب ذهني', memory: 'لعبة الذاكرة', riddle: 'ألغاز' }[t.config.type] || '') + ` · ${t.reward_min} دقيقة`;
           else if (kind === 'chore') sub = `${t.reward_min} دقيقة`;
           return h('div', { class: 'item' }, h('div', { class: 'grow' }, h('div', {}, t.title), sub ? h('div', { class: 'small muted' }, sub) : null),

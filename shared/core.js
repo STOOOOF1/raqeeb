@@ -362,7 +362,42 @@ const CK = (() => {
   }
   const shuffle = (a) => { a = [...a]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
+  // ---------- يوتيوب ----------
+  // يستخرج معرّف المقطع من الرابط بصيغه المختلفة، أو يقبل المعرّف نفسه
+  function ytId(input) {
+    const s = (input || '').trim();
+    if (/^[\w-]{11}$/.test(s)) return s;
+    try {
+      const u = new URL(/^https?:\/\//.test(s) ? s : 'https://' + s);
+      const host = u.hostname.replace(/^(www\.|m\.|music\.)/, '');
+      let id = null;
+      if (host === 'youtu.be') id = u.pathname.split('/')[1];
+      else if (/(^|\.)youtube(-nocookie)?\.com$/.test(host)) {
+        id = u.searchParams.get('v') || (u.pathname.match(/^\/(?:shorts|embed|live|v)\/([\w-]{11})/) || [])[1];
+      }
+      return id && /^[\w-]{11}$/.test(id) ? id : null;
+    } catch { return null; }
+  }
+  // يقرأ وقت البداية من الرابط (t=90 أو t=1m30s)
+  function ytStart(input) {
+    try {
+      const t = new URL(/^https?:\/\//.test(input) ? input : 'https://' + input).searchParams.get('t') || '';
+      const m = t.match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s?)?$/);
+      return m ? (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0) : 0;
+    } catch { return 0; }
+  }
+  // "1:30" أو "90" -> 90 ثانية؛ الفارغ -> 0؛ غير الصالح -> NaN
+  function parseTime(s) {
+    s = String(s || '').trim();
+    if (!s) return 0;
+    if (!/^\d+(:\d{1,2}){0,2}$/.test(s)) return NaN;
+    return s.split(':').reduce((acc, p) => acc * 60 + +p, 0);
+  }
+  const fmtTime = (sec) => { sec = Math.max(0, Math.round(sec || 0)); const H = Math.floor(sec / 3600), M = Math.floor((sec % 3600) / 60), S = sec % 60; return H ? `${H}:${pad(M)}:${pad(S)}` : `${M}:${pad(S)}`; };
+  const ytThumb = (id) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
+
   return {
+    ytId, ytStart, parseTime, fmtTime, ytThumb,
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
     parseUnits, splitUnits, nextPortion, words, computeState, usedToday, gate, me, fn, subscribe, debounce,
     startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, beep, shuffle,

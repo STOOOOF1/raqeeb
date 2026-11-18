@@ -10,7 +10,9 @@
   ];
   const N = {
     has: !!B,
-    apps: () => { try { return B ? JSON.parse(B.getApps()) : DEMO_APPS; } catch { return []; } },
+    apps: (fresh) => {
+      try { if (fresh && B && B.refreshApps) B.refreshApps(); return B ? JSON.parse(B.getApps()) : DEMO_APPS; } catch { return []; }
+    },
     launch: (pkg) => (B ? B.launchApp(pkg) : toast('معاينة: سيفتح التطبيق على جهاز الطفل')),
     policy: (p) => { if (B) B.setPolicy(JSON.stringify(p)); },
     wifi: () => B && B.openWifi(),
@@ -183,6 +185,12 @@
       }
       return;
     }
+    // ولي الأمر ضغط "تحديث قائمة التطبيقات"
+    if (p.table === 'children' && p.eventType === 'UPDATE' && p.new?.id === S.me?.child_id
+      && p.new.apps_refresh_at && p.new.apps_refresh_at !== localStorage.getItem('ck-apps-refresh')) {
+      localStorage.setItem('ck-apps-refresh', p.new.apps_refresh_at);
+      reportApps(true);
+    }
     if (p.table === 'grants' && p.eventType === 'INSERT' && p.new.source === 'parent') { CK.beep(); N.toast('🎉 سمح لك والداك بوقت إضافي'); }
     if (p.table === 'submissions' && p.eventType === 'UPDATE' && p.old?.status !== p.new.status) {
       if (p.new.status === 'approved') { CK.beep(); toast('🎉 أجاز والداك مهمتك'); N.toast('🎉 أجاز والداك مهمتك'); }
@@ -193,14 +201,16 @@
 
   const reportUsage = () => S.U.day && sb.rpc('report_usage', { p_day: S.U.day, p_secs: Math.floor(S.U.used / 1000) }).then(() => {}, () => {});
   const heartbeat = () => { reportUsage(); sb.rpc('heartbeat', { p_info: N.info() }).then(() => {}, () => {}); };
-  // تُرسل قائمة التطبيقات فقط إذا تغيّرت (تثبيت أو حذف تطبيق)
-  const reportApps = async () => {
-    const apps = N.apps(); if (!apps.length) return;
+  // تُرسل قائمة التطبيقات فقط إذا تغيّرت (تثبيت أو حذف تطبيق)، أو دائمًا عند force (طلب ولي الأمر)
+  const reportApps = async (force) => {
+    const apps = N.apps(force === true); if (!apps.length) return;
     const sig = S.me.child_id + ':' + apps.map((a) => a.package).sort().join();
-    if (localStorage.getItem('ck-apps-sig') === sig) return;
+    if (force !== true && localStorage.getItem('ck-apps-sig') === sig) return;
     const { error } = await sb.rpc('report_apps', { p_apps: apps });
     if (!error) localStorage.setItem('ck-apps-sig', sig);
   };
+  // يستدعيها تطبيق أندرويد عند تثبيت تطبيق أو حذفه
+  window.onAppsChanged = CK.debounce(() => S.me && reportApps(true), 3000);
   // زر الرجوع في أندرويد: يغلق النافذة المفتوحة أو يعود للرئيسية
   window.onNativeBack = () => {
     if (S.breakOpen) return;
@@ -333,10 +343,20 @@
     return h('div', { class: 'card' + (st.mainsOk ? '' : ' warn') }, h('h2', {}, '⭐ مهامي الرئيسية اليوم'),
       st.mainList.map((m) => h('div', { class: 'item' }, h('span', { class: 'grow' }, m.task.title),
         m.sub ? h('span', { class: 'tag ' + (m.sub.status === 'approved' ? 'ok' : 'warn') }, m.sub.status === 'approved' ? 'تمت ✓' : m.ok ? 'أُبلغ والداك ✓' : 'بانتظار تأكيد والديك')
+          : m.task.config?.yt ? h('button', { class: 'btn sm', onclick: () => openMain(m.task) }, '🎬 شاهد واختبر')
           : h('button', { class: 'btn sm', onclick: () => run(async () => {
             await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: m.task.id, kind: 'main', day: today() }));
             await reload();
           }, 'أُرسل إشعار لوالديك') }, 'أنجزتها'))));
+  }
+
+  // مهمة رئيسية فيها مقطع: يشاهده كاملًا، ثم يجيب الأسئلة كلها صحيحة، ثم تُرسل لوالديه
+  function openMain(t) {
+    const body = openOverlay('⭐ ' + t.title);
+    watchThenQuiz(body, t, () => run(async () => {
+      await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: 'main', day: today() }));
+      closeOverlay(); await reload();
+    }, 'أحسنت! أُرسل إشعار لوالديك 🌟'));
   }
 
   function readyCard() {
@@ -404,8 +424,8 @@
     const quick = S.d.tasks.filter((t) => ['reading', 'puzzle'].includes(t.kind));
     out.push(h('div', { class: 'card' }, h('h2', {}, '⚡ مهام سريعة تكسب بها ربع ساعة'),
       quickLeft <= 0 && !capped ? h('p', { class: 'tag warn' }, 'بلغت الحد اليومي للمهام السريعة') : null,
-      quick.length ? quick.map((t) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, KINDS[t.kind].ic),
-        h('div', { class: 'grow' }, h('div', {}, t.title), h('div', { class: 'small muted' }, `${KINDS[t.kind].name} · ${t.reward_min} دقيقة`)),
+      quick.length ? quick.map((t) => h('div', { class: 'item' }, h('span', { class: 'avatar' }, t.config?.yt ? '🎬' : KINDS[t.kind].ic),
+        h('div', { class: 'grow' }, h('div', {}, t.title), h('div', { class: 'small muted' }, `${t.config?.yt ? 'شاهد واختبر' : KINDS[t.kind].name} · ${t.reward_min} دقيقة`)),
         subToday(t) ? h('span', { class: 'tag ok' }, 'تمت اليوم ✓')
           : h('button', { class: 'btn sm', disabled: quickLeft <= 0, onclick: () => (t.kind === 'reading' ? openReading(t) : openPuzzle(t)) }, 'ابدأ')))
         : h('p', { class: 'muted small' }, 'لا توجد مهام حاليًا.')));
@@ -481,7 +501,33 @@
     toast(S.st.reason === 'cap' ? `أحسنت! أضيف ${t.reward_min} دقيقة، لكنك بلغت حدك اليومي` : `أحسنت! فُتح لك ${t.reward_min} دقيقة 🎉`);
   }
 
+  // مقطع ← (نص إن وُجد) ← اختبار؛ عند الخطأ يعيد بأسئلة مختلفة، ويمكنه إعادة مشاهدة المقطع
+  function watchThenQuiz(body, t, onPass) {
+    const used = new Set(), yt = t.config.yt, size = t.config.quiz_size || 3;
+    const test = async () => { const pass = await Games.quiz(body, t.questions, size, used); if (pass) onPass(); else ready(true); };
+    const ready = (again) => {
+      body.replaceChildren(
+        again ? h('div', { class: 'card bad' }, h('b', {}, 'بعض إجاباتك لم تكن صحيحة'), h('p', {}, 'يمكنك مشاهدة المقطع مرة أخرى، وستأتيك أسئلة مختلفة.'))
+          : h('div', { class: 'card soft' }, h('b', {}, '👏 أكملت المشاهدة'), h('p', { class: 'small' }, `أجب عن ${Math.min(size, t.questions.length)} أسئلة إجابة صحيحة لتنجز المهمة.`)),
+        t.body ? h('div', { class: 'card' }, h('div', { class: 'reading' }, t.body)) : null,
+        h('button', { class: 'btn big block', onclick: test }, again ? 'أعطني أسئلة أخرى' : 'اختبرني'),
+        h('button', { class: 'btn ghost block', onclick: rewatch }, '▶ أعد مشاهدة المقطع'));
+      if (S.overlay) S.overlay.scrollTop = 0;
+    };
+    // إعادة المشاهدة حرة (سبق أن أكمله)، والاختبار متاح في أي وقت
+    const rewatch = () => {
+      const p = new URLSearchParams({ autoplay: 1, rel: 0, playsinline: 1, modestbranding: 1, iv_load_policy: 3 });
+      if (yt.start) p.set('start', yt.start); if (yt.end) p.set('end', yt.end);
+      body.replaceChildren(
+        h('div', { class: 'player' }, h('iframe', { src: `https://www.youtube-nocookie.com/embed/${yt.id}?${p}`, allow: 'autoplay; encrypted-media; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin' })),
+        h('button', { class: 'btn big block', onclick: test }, 'اختبرني'));
+    };
+    if (Games.watchedToday(t.id)) ready(false);
+    else Games.watch(body, yt, t.id).then((ok) => { if (ok && body.isConnected) ready(false); });
+  }
+
   function openReading(t) {
+    if (t.config.yt) return watchThenQuiz(openOverlay('🎬 ' + t.title), t, () => claim(t));
     const body = openOverlay('📚 ' + t.title);
     const used = new Set();
     const read = (again) => {
