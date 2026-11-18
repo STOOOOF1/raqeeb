@@ -109,8 +109,7 @@ object Wifi {
                 "open" -> allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE)
                 else -> {
                     if (sec == "sae" && Build.VERSION.SDK_INT >= 29) {
-                        allowedKeyManagement.set(WifiConfiguration.KeyMgmt.SAE)
-                        requirePmf = true
+                        allowedKeyManagement.set(WifiConfiguration.KeyMgmt.SAE) // النظام يفرض PMF مع SAE تلقائيًا
                     }
                     // مفتاح من 64 رمزًا ست عشريًا يُمرَّر كما هو، وغيره كلمة مرور بين علامتي تنصيص
                     preSharedKey = if (pass.length == 64 && pass.all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }) pass else "\"" + pass + "\""
