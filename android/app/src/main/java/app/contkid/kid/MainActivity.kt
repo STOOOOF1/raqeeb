@@ -120,6 +120,7 @@ class MainActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 1) return
         val req = pendingAudio ?: return
         pendingAudio = null
         if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) req.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
@@ -199,11 +200,33 @@ class MainActivity : Activity() {
             }
         }
 
+        /** إعدادات الواي فاي في النظام: فقط حين لا يكون التطبيق مالك الجهاز (فلا قفل أصلًا).
+         *  مع القفل لا تُفتح لأنها في بعض الأجهزة (شاومي) تفتح تطبيق الإعدادات كله؛ تُستعمل wifi* بدلها */
         @JavascriptInterface
         fun openWifi() = runOnUiThread {
-            Policy.openWifiWindow(this@MainActivity)
+            if (Policy.isOwner(this@MainActivity)) return@runOnUiThread
             runCatching { startActivity(Intent("android.settings.WIFI_SETTINGS").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
         }
+
+        @JavascriptInterface
+        fun wifiState(): String = Wifi.state(this@MainActivity)
+
+        /** يجهّز إذن الموقع والواي فاي ثم يعيد الشبكات القريبة */
+        @JavascriptInterface
+        fun wifiNetworks(rescan: Boolean): String {
+            val a = this@MainActivity
+            if (rescan) {
+                Wifi.prepare(a)
+                if (!Wifi.hasLocationPermission(a)) runOnUiThread {
+                    requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION), 2)
+                }
+            }
+            return Wifi.networks(a, rescan)
+        }
+
+        @JavascriptInterface
+        fun wifiConnect(ssid: String, pass: String, sec: String, hidden: Boolean): String =
+            runCatching { Wifi.connect(this@MainActivity, ssid, pass, sec, hidden) }.getOrElse { "تعذّر الاتصال: " + (it.message ?: "") }
 
         @JavascriptInterface
         fun toast(text: String) = runOnUiThread {

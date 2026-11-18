@@ -158,6 +158,12 @@ const CK = (() => {
       windows,
     };
     if (c.force_lock) return { ...base, reason: 'force' };
+    // الطفل أوقف وقته مؤقتًا: الجهاز مقفل والوقت المتبقي محفوظ كما كان لحظة الإيقاف
+    if (c.paused_at) {
+      const pa = new Date(c.paused_at);
+      const was = computeState({ ...d, child: { ...c, paused_at: null } }, pa);
+      return { ...base, reason: 'pause', left: was.unlocked ? Math.max(0, was.until - pa.getTime()) : 0 };
+    }
 
     const iv = [];
     for (const g of d.grants) {
@@ -179,7 +185,8 @@ const CK = (() => {
     const inSched = cur.some((i) => i.sched);
     // الوقت الجاري الذي يُعوَّض فيه الفاصل: المنحة التي تنتهي عند نهاية الوقت المفتوح
     const endG = iv.find((i) => i.g && Math.abs(i.e - until) < 1000);
-    const st = { ...base, unlocked: true, until, why: parentG ? 'parent' : inSched ? 'schedule' : 'task', endGrant: endG ? endG.g : null };
+    const mainG = cur.find((i) => i.g && i.g.source === 'main');
+    const st = { ...base, unlocked: true, until, why: parentG ? 'parent' : inSched ? 'schedule' : mainG ? 'main' : 'task', endGrant: endG ? endG.g : null };
     // الحد اليومي للاستخدام (إذن الوالدين المباشر يتجاوزه)
     const cap = (c.max_daily_min || 0) * 60000;
     if (cap && !parentG) {

@@ -257,8 +257,9 @@
     let text, cls = 'bad';
     if (st.unlocked) {
       cls = 'ok';
-      text = `مفتوح حتى ${clock(st.until)} · ` + { parent: 'بإذن مباشر', schedule: 'الوقت الرسمي', task: 'وقت مكتسب بمهمة' }[st.why];
-    } else if (st.reason === 'cap') text = 'مقفل · بلغ الحد اليومي للاستخدام';
+      text = `مفتوح حتى ${clock(st.until)} · ` + { parent: 'بإذن مباشر', schedule: 'الوقت الرسمي', task: 'وقت مكتسب بمهمة', main: 'ساعة المهام الرئيسية' }[st.why];
+    } else if (st.reason === 'pause') text = `متوقف مؤقتًا من الطفل · بقي ${Math.ceil(st.left / 60000)} دقيقة`;
+    else if (st.reason === 'cap') text = 'مقفل · بلغ الحد اليومي للاستخدام';
     else if (st.reason === 'force') text = 'مقفل يدويًا من الوالدين';
     else if (st.reason === 'main') text = 'مقفل · بانتظار إنجاز المهام الرئيسية';
     else text = 'مقفل · خارج الأوقات المسموحة' + (st.nextWindow ? ` (يفتح ${clock(st.nextWindow.s)})` : '');
@@ -302,6 +303,21 @@
     }, approve ? 'تمت الإجازة ✅' : 'تم الرفض، وسيُطلب منه الإعادة');
   }
 
+  // تصفير مهام اليوم: تعود كل مهامه (الرئيسية والإضافية والسريعة) كأنها لم تُنجز اليوم
+  function resetTasks(c) {
+    const withGrants = h('input', { type: 'checkbox', checked: true, style: 'width:20px;height:20px;accent-color:var(--pri)' });
+    modal('🔄 تصفير مهام اليوم', h('div', { class: 'col' },
+      h('p', {}, `ستعود كل مهام ${c.name} لهذا اليوم كأنها لم تُنجز: المهام الرئيسية والإضافية والسريعة، وتُحذف التسجيلات التي لم تراجعها، وتُلغى «ساعته اليومية» إن لم يبدأها.`),
+      h('p', { class: 'small muted' }, 'لا يتأثر تقدّم الحفظ، ولا الوقت الذي بدأه ويجري الآن.'),
+      h('label', { class: 'row' }, withGrants, h('span', {}, 'حذف الأوقات التي كسبها اليوم ولم يبدأها بعد'))),
+    { okText: 'تصفير', onOk: () => run(async () => {
+      const since = new Date(); since.setHours(0, 0, 0, 0);
+      const paths = await q(sb.rpc('reset_tasks', { p_child: c.id, p_day: CK.dayStr(), p_since: since.toISOString(), p_grants: withGrants.checked }));
+      (paths || []).forEach((p) => CK.removeAudio(p));
+      await reload();
+    }, 'صُفّرت مهام اليوم') });
+  }
+
   function viewHome(c) {
     const { st, text, cls } = stateLine(c);
     const out = [];
@@ -325,6 +341,7 @@
         c.force_lock
           ? h('button', { class: 'btn ok', onclick: () => run(async () => { await q(sb.from('children').update({ force_lock: false }).eq('id', c.id)); await reload(); }, 'أُلغي القفل اليدوي') }, '🔓 إلغاء القفل اليدوي')
           : h('button', { class: 'btn bad', onclick: () => run(async () => { await q(sb.from('children').update({ force_lock: true }).eq('id', c.id)); await reload(); }, 'تم قفل الجهاز') }, '🔒 قفل الآن'),
+        h('button', { class: 'btn ghost', onclick: () => resetTasks(c) }, '🔄 تصفير مهام اليوم'),
         activeParent.length ? h('button', { class: 'btn plain', onclick: () => run(async () => {
           await q(sb.from('grants').update({ status: 'cancelled' }).in('id', activeParent.map((g) => g.id))); await reload();
         }, 'أُلغي الإذن') }, 'إلغاء الإذن المباشر') : null)));

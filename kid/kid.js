@@ -15,7 +15,7 @@
     },
     launch: (pkg) => (B ? B.launchApp(pkg) : toast('معاينة: سيفتح التطبيق على جهاز الطفل')),
     policy: (p) => { if (B) B.setPolicy(JSON.stringify(p)); },
-    wifi: () => B && B.openWifi(),
+    wifi: () => openWifi(),
     toast: (t) => B && B.toast(t),
     info: () => { try { return B ? JSON.parse(B.info()) : { preview: true }; } catch { return {}; } },
     // حالة الشاشة من النظام: {on, off: مجموع مدة الإطفاء, boot}
@@ -48,8 +48,24 @@
   // ================= العمليات المؤجلة: تُطبَّق فورًا على الجهاز ثم تُرسل للخادم متى توفر الاتصال =================
   function applyOps() {
     const raw = S.raw;
-    const d = { ...raw, subs: [...raw.subs], grants: raw.grants.map((g) => ({ ...g })) };
+    const d = { ...raw, child: raw.child && { ...raw.child }, subs: [...raw.subs], grants: raw.grants.map((g) => ({ ...g })) };
     for (const op of S.ops) {
+      if ((op.type === 'pause' || op.type === 'resume') && !d.child) continue;
+      if (op.type === 'pause') {
+        if (!op.rejected && !d.child.paused_at) d.child.paused_at = op.at;
+        continue;
+      }
+      if (op.type === 'resume') { // يؤخر نهاية الوقت الجاري وما بعده بمدة التوقف (كما يفعل الخادم)
+        if (op.rejected || !d.child.paused_at) continue;
+        const pa = new Date(d.child.paused_at).getTime(), delta = Math.max(0, new Date(op.at).getTime() - pa);
+        for (const g of d.grants) {
+          if (g.status !== 'active' || !g.ends_at || new Date(g.ends_at).getTime() <= pa) continue;
+          g.ends_at = iso(new Date(g.ends_at).getTime() + delta);
+          if (new Date(g.starts_at).getTime() > pa) g.starts_at = iso(new Date(g.starts_at).getTime() + delta);
+        }
+        d.child.paused_at = null;
+        continue;
+      }
       if (op.type === 'quick') {
         if (d.grants.some((g) => g.id === op.id) || op.rejected) continue;
         d.subs.unshift({ id: op.id, task_id: op.task, kind: op.kind, day: op.day, status: 'approved' });
@@ -74,7 +90,8 @@
       for (const op of S.ops.filter((o) => !o.sentAt)) {
         const r = op.type === 'quick' ? await sb.rpc('claim_quick', { p_task: op.task, p_day: op.day, p_id: op.id, p_start: op.start })
           : op.type === 'start' ? await sb.rpc('start_grant', { p_id: op.grant, p_start: op.start })
-            : await sb.rpc('break_done', { p_id: op.grant, p_secs: op.secs, p_op: op.id });
+            : op.type === 'pause' || op.type === 'resume' ? await sb.rpc('pause_time', { p_pause: op.type === 'pause', p_at: op.at, p_op: op.id })
+              : await sb.rpc('break_done', { p_id: op.grant, p_secs: op.secs, p_op: op.id });
         if (r.error && !r.error.code) break; // لا اتصال: نعيد المحاولة لاحقًا
         if (r.error) { op.rejected = true; toast('لم يُعتمد: ' + r.error.message); } // رفضه الخادم (كتجاوز الحد اليومي)
         op.sentAt = Date.now();
@@ -168,7 +185,25 @@
       if (S.tab !== 'chat') S.unread = unread.length;
       save('ck-kid-cache', { me: S.me, d: S.raw });
       tick(true);
+      claimMainHour();
     } catch (e) { console.error(e); }
+  }
+
+  // بعد إنجاز المهام الرئيسية تُمنح «ساعتك اليومية» مرة واحدة في اليوم، ويبدؤها الطفل متى شاء
+  let claimingMain = false;
+  async function claimMainHour() {
+    // المفتاح يتغير إذا صفّر الوالد مهام اليوم، فتُطلب الساعة من جديد بعد إعادة إنجازها
+    const day = today() + '|' + (S.d.child.tasks_reset_at || '');
+    if (claimingMain || !S.st?.mainsOk || localStorage.getItem('ck-main-day') === day) return;
+    if (S.d.grants.some((g) => g.source === 'main' && g.day === today() && g.status === 'ready')) return localStorage.setItem('ck-main-day', day);
+    claimingMain = true;
+    const { data, error } = await sb.rpc('claim_main', { p_day: today() });
+    claimingMain = false;
+    if (error) return;
+    localStorage.setItem('ck-main-day', day);
+    if (data?.status !== 'ready' || S.d.grants.some((g) => g.id === data.id)) return; // ساعة اليوم سبق منحها
+    CK.beep(); toast('🎉 أنجزت مهامك الرئيسية، كسبت ساعتك اليومية');
+    reload();
   }
   const reloadSoon = CK.debounce(reload, 300);
 
@@ -233,7 +268,7 @@
       } else if (gap < 5000 && !document.hidden) on = gap; // معاينة المتصفح
       else off = gap;
     }
-    if (S.resting) on = 0;
+    if (S.resting || S.d.child.paused_at) on = 0; // التوقف المؤقت لا يُحسب من الاستخدام
     U.used += on; U.since += on;
     if (off >= restMs) U.since = 0; // إطفاء بطول الفاصل يكفي راحةً للعينين
     else if (off > 0 && on < 1500) { U.rest += off; if (U.rest >= restMs) U.since = 0; }
@@ -296,21 +331,36 @@
 
   function drawHero(st, t) {
     const c = S.d.child;
-    let line, big = '';
+    let line, big = '', btn = null;
     if (st.unlocked) {
       line = st.capped && st.until - t.getTime() < 3600000 ? 'آخر وقتك اليومي ⏳'
-        : { parent: 'سمح لك والداك 🎁', schedule: 'وقت اللعب الرسمي', task: 'وقت كسبته بإنجازك 💪' }[st.why];
+        : { parent: 'سمح لك والداك 🎁', schedule: 'وقت اللعب الرسمي', task: 'وقت كسبته بإنجازك 💪', main: 'ساعتك اليومية ⭐' }[st.why];
       big = CK.countdown(st.until - t.getTime());
+      // الوقت الرسمي من الجدول لا يُؤجَّل، فلا إيقاف فيه
+      if (st.why !== 'schedule' && !S.breakOpen) btn = 'pause';
+    } else if (st.reason === 'pause') {
+      line = 'أوقفت وقتك مؤقتًا ⏸ — الباقي محفوظ لك';
+      big = CK.countdown(st.left);
+      btn = 'resume';
     } else if (st.reason === 'cap') line = `انتهى حدّك اليومي (${capText(c.max_daily_min)})، نلتقي غدًا 🌙`;
     else if (st.reason === 'force') line = 'الجهاز مقفل من والديك';
     else if (st.reason === 'main') line = 'أنجز مهامك الرئيسية ليُفتح الجهاز';
     else line = st.nextWindow ? `يفتح الجهاز الساعة ${clock(st.nextWindow.s)}` : 'انتهى وقت اللعب اليوم';
-    const key = (st.unlocked ? 'u' : 'l') + line;
+    const key = (st.unlocked ? 'u' : 'l') + line + btn;
     if (heroEl.dataset.key !== key) {
       heroEl.dataset.key = key;
+      const pz = btn === 'pause'
+        ? h('button', { class: 'btn ghost sm', style: 'background:#fff;margin-top:8px', onclick: () => {
+          pushOp({ type: 'pause', at: iso(now().getTime()) }); toast('⏸ توقف وقتك، والباقي محفوظ لك');
+        } }, '⏸ إيقاف الوقت مؤقتًا')
+        : btn === 'resume'
+          ? h('button', { class: 'btn ok', style: 'margin-top:8px', onclick: () => {
+            pushOp({ type: 'resume', at: iso(now().getTime()) }); toast('▶ استأنفت وقتك، استمتع!');
+          } }, '▶ استئناف الوقت')
+          : null;
       heroEl.replaceChildren(h('div', { class: 'hero' + (st.unlocked ? '' : ' locked') },
-        h('div', { class: 'row between' }, h('b', {}, 'مرحبًا ' + c.name), h('span', {}, st.unlocked ? '🔓' : '🔒')),
-        h('div', {}, line), h('div', { class: 'big', id: 'cd' }), h('div', { class: 'small', id: 'use', style: 'opacity:.85' })));
+        h('div', { class: 'row between' }, h('b', {}, 'مرحبًا ' + c.name), h('span', {}, st.unlocked ? '🔓' : btn === 'resume' ? '⏸' : '🔒')),
+        h('div', {}, line), h('div', { class: 'big', id: 'cd' }), pz, h('div', { class: 'small', id: 'use', style: 'opacity:.85' })));
     }
     const cd = $('#cd', heroEl);
     cd.textContent = big; cd.classList.toggle('hidden', !big);
@@ -402,6 +452,7 @@
     const st = S.st;
     if (!st.mainList.length) return null;
     return h('div', { class: 'card' + (st.mainsOk ? '' : ' warn') }, h('h2', {}, '⭐ مهامي الرئيسية اليوم'),
+      h('p', { class: 'small muted' }, 'أنجزها كلها لتكسب ساعتك اليومية، ثم زد وقتك حتى ساعتين بمهام النصف ساعة والربع ساعة.'),
       st.mainList.map((m) => h('div', { class: 'item' }, h('span', { class: 'grow' }, m.task.title),
         m.sub ? h('span', { class: 'tag ' + (m.sub.status === 'approved' ? 'ok' : 'warn') }, m.sub.status === 'approved' ? 'تمت ✓' : m.ok ? 'أُبلغ والداك ✓' : 'بانتظار تأكيد والديك')
           : m.task.config?.yt ? h('button', { class: 'btn sm', onclick: () => openMain(m.task) }, '🎬 شاهد واختبر')
@@ -425,8 +476,8 @@
     if (!st.ready.length) return null;
     return h('div', { class: 'card soft' }, h('h2', {}, '🎁 وقت كسبته'),
       st.mainsOk ? null : h('p', { class: 'small' }, 'يبدأ بعد إنجاز مهامك الرئيسية.'),
-      st.ready.map((g) => h('div', { class: 'item' }, h('span', { class: 'grow' }, g.title || 'وقت إضافي'),
-        h('button', { class: 'btn', disabled: !st.mainsOk || st.reason === 'cap', onclick: () => {
+      st.ready.map((g) => h('div', { class: 'item' }, h('span', { class: 'grow' }, (g.source === 'main' ? '⭐ ' : '') + (g.title || 'وقت إضافي')),
+        h('button', { class: 'btn', disabled: !st.mainsOk || st.reason === 'cap' || st.reason === 'pause', onclick: () => {
           const s = nextStart();
           pushOp({ type: 'start', grant: g.id, start: iso(s), end: iso(s + g.minutes * 60000) });
           toast('بدأ وقتك، استمتع!');
@@ -503,6 +554,91 @@
     return body;
   }
   function closeOverlay() { if (S.overlay) { S.overlay.remove(); S.overlay = null; } }
+
+  // ---- الواي فاي من داخل التطبيق ----
+  // لا تُفتح إعدادات النظام مع القفل: في شاومي وغيرها تفتح تطبيق الإعدادات كله
+  const W = {
+    state: () => { try { return JSON.parse(B.wifiState()); } catch { return {}; } },
+    list: (rescan) => { try { return JSON.parse(B.wifiNetworks(!!rescan)); } catch { return []; } },
+  };
+  function openWifi() {
+    if (!B) return;
+    if (!B.wifiNetworks || !N.info().owner) return B.openWifi(); // بلا قفل: إعدادات النظام كالمعتاد
+    const body = openOverlay('📶 الواي فاي');
+    const el = S.overlay;
+    const status = h('div', { class: 'card soft' });
+    const list = h('div', { class: 'col' });
+    let nets = [], busy = false;
+    const alive = () => S.overlay === el;
+    const bars = (n) => '▂▄▆█'.slice(0, Math.max(1, n));
+    const showStatus = () => {
+      const s = W.state();
+      status.replaceChildren(s.wifi && s.ssid
+        ? h('div', {}, h('b', {}, `متصل بـ «${s.ssid}»`), h('div', { class: 'small muted' }, s.online ? 'الإنترنت يعمل ✓' : 'متصل بالشبكة لكن الإنترنت لا يعمل'))
+        : h('div', {}, h('b', {}, 'غير متصل بالواي فاي'), h('div', { class: 'small muted' }, 'اختر شبكتك من القائمة.')),
+      !s.location || !s.permission ? h('div', { class: 'small muted', style: 'margin-top:6px' }, 'لا تظهر الشبكات؟ اكتب اسم الشبكة بنفسك من الزر في الأسفل.') : null);
+      return s;
+    };
+    const showList = () => {
+      const cur = W.state().ssid;
+      list.replaceChildren(...(nets.length ? nets.map((n) => h('button', { class: 'item', style: 'width:100%;text-align:start', onclick: () => pick(n) },
+        h('span', { class: 'avatar', dir: 'ltr' }, bars(n.level)),
+        h('div', { class: 'grow' }, h('div', { dir: 'auto' }, n.ssid),
+          h('div', { class: 'small muted' }, n.ssid === cur ? 'متصل' : n.sec === 'open' ? 'مفتوحة' : n.sec === 'eap' || n.sec === 'wep' ? 'تحتاج إعدادًا خاصًا' : '🔒 بكلمة مرور'))))
+        : [h('p', { class: 'muted center' }, 'جارٍ البحث عن الشبكات…')]));
+    };
+    const scan = () => {
+      nets = W.list(true); showList();
+      // نتائج البحث الجديد تصل بعد ثوانٍ
+      [2500, 6000].forEach((ms) => setTimeout(() => { if (alive() && !busy) { nets = W.list(false); showList(); showStatus(); } }, ms));
+    };
+    const home = () => {
+      busy = false;
+      body.replaceChildren(status, list,
+        h('button', { class: 'btn ghost block', onclick: scan }, '↻ بحث من جديد'),
+        h('button', { class: 'btn plain block', onclick: () => form({ ssid: '', sec: 'psk', manual: true }) }, '✍️ أكتب اسم الشبكة بنفسي'));
+      showStatus(); scan();
+    };
+    const pick = (n) => {
+      if (n.ssid === W.state().ssid) return toast('أنت متصل بهذه الشبكة');
+      if (n.sec === 'open') return connect(n, '');
+      form(n);
+    };
+    const form = (n) => {
+      busy = true;
+      const ssid = h('input', { type: 'text', dir: 'auto', placeholder: 'اسم الشبكة', value: n.ssid, autocomplete: 'off' });
+      const pass = h('input', { type: 'password', dir: 'ltr', placeholder: 'كلمة المرور', autocomplete: 'off' });
+      const show = h('input', { type: 'checkbox', onchange: () => { pass.type = show.checked ? 'text' : 'password'; } });
+      const open = h('input', { type: 'checkbox', onchange: () => { pass.disabled = open.checked; } });
+      const go = h('button', { class: 'btn big block', type: 'submit' }, 'اتصال');
+      body.replaceChildren(h('form', { class: 'col', onsubmit: (ev) => {
+        ev.preventDefault();
+        connect({ ssid: ssid.value.trim(), sec: open.checked ? 'open' : n.sec, manual: n.manual }, pass.value);
+      } },
+      n.manual ? h('label', { class: 'f' }, 'اسم الشبكة', ssid) : h('h2', { dir: 'auto' }, n.ssid),
+      h('label', { class: 'f' }, 'كلمة المرور', pass),
+      h('label', { class: 'row' }, show, 'إظهار كلمة المرور'),
+      n.manual ? h('label', { class: 'row' }, open, 'شبكة مفتوحة بلا كلمة مرور') : null,
+      go, h('button', { class: 'btn plain block', type: 'button', onclick: home }, 'رجوع')));
+      (n.manual ? ssid : pass).focus();
+    };
+    const connect = (n, pass) => {
+      busy = true;
+      const err = B.wifiConnect(n.ssid, pass, n.sec, !!n.manual);
+      if (err) { toast(err); return; }
+      body.replaceChildren(h('div', { class: 'card soft center' }, h('b', {}, `جارٍ الاتصال بـ «${n.ssid}»…`)));
+      const t0 = Date.now();
+      const wait = () => {
+        if (!alive()) return;
+        const s = W.state();
+        if (s.wifi && s.ssid === n.ssid) { toast('تم الاتصال ✓'); window.dispatchEvent(new Event('online')); return home(); }
+        if (Date.now() - t0 > 25000) { toast('لم يتم الاتصال، تأكد من كلمة المرور'); return n.sec === 'open' ? home() : form(n); }
+        setTimeout(wait, 1500);
+      };
+      setTimeout(wait, 2000);
+    };
+    home();
+  }
 
   // ---- الحفظ والتسميع ----
   function openHifz(t) {

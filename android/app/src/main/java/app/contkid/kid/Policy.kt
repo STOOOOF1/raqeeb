@@ -21,8 +21,8 @@ object Policy {
     private val RESTRICTIONS = listOf("no_factory_reset", "no_safe_boot", "no_add_user", "no_config_date_time")
 
     private fun prefs(c: Context): SharedPreferences = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private fun dpm(c: Context) = c.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-    private fun admin(c: Context) = ComponentName(c, AdminReceiver::class.java)
+    fun dpm(c: Context) = c.getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    fun admin(c: Context) = ComponentName(c, AdminReceiver::class.java)
 
     fun isOwner(c: Context): Boolean = dpm(c).isDeviceOwnerApp(c.packageName)
     fun kiosk(c: Context): Boolean = prefs(c).getBoolean("kiosk", true)
@@ -53,15 +53,6 @@ object Policy {
             .apply()
     }
 
-    /** يسمح بإعدادات الواي فاي دقيقتين (من شاشة الربط) */
-    fun openWifiWindow(c: Context) {
-        prefs(c).edit().putLong("wifiUntil", System.currentTimeMillis() + 120_000).apply()
-        apply(c)
-    }
-
-    private fun wifiPackage(c: Context): String? =
-        Intent("android.settings.WIFI_SETTINGS").resolveActivity(c.packageManager)?.packageName
-
     fun apply(c: Context) {
         val now = System.currentTimeMillis()
         if (isOwner(c)) {
@@ -77,7 +68,7 @@ object Policy {
                 pkgs.addAll(listOf("com.google.android.permissioncontroller", "com.android.permissioncontroller", "com.android.server.telecom"))
                 (c.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager)?.defaultDialerPackage?.let { pkgs.add(it) }
                 if (isOpen(c)) pkgs.addAll(allowed(c))
-                if (prefs(c).getLong("wifiUntil", 0) > now) wifiPackage(c)?.let { pkgs.add(it) }
+                // لا تُسمح إعدادات الواي فاي هنا أبدًا: الاتصال يتم من داخل التطبيق (Wifi.kt)
                 runCatching { dpm.setLockTaskPackages(admin, pkgs.toTypedArray()) }
                 if (android.os.Build.VERSION.SDK_INT >= 28) runCatching {
                     dpm.setLockTaskFeatures(
@@ -116,14 +107,14 @@ object Policy {
         }
     }
 
-    /** منبّه عند أقرب موعد (نهاية الوقت، الفاصل، نهاية نافذة الواي فاي) لإعادة القفل ولو كانت الواجهة متوقفة */
+    /** منبّه عند أقرب موعد (نهاية الوقت، الفاصل) لإعادة القفل ولو كانت الواجهة متوقفة */
     private fun schedule(c: Context, now: Long) {
         val p = prefs(c)
         val am = c.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         val pi = PendingIntent.getBroadcast(c, 1, Intent(c, PolicyReceiver::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         am.cancel(pi)
-        val times = mutableListOf(p.getLong("wifiUntil", 0))
+        val times = mutableListOf<Long>()
         if (p.getBoolean("unlocked", false)) {
             times.add(p.getLong("until", 0))
             times.add(p.getLong("breakAt", 0))
