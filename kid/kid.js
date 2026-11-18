@@ -121,7 +121,7 @@
 
   // ================= الهيكل والبيانات =================
   let heroEl, mainEl, navEl;
-  const TABS = [['home', '🏠', 'الرئيسية'], ['tasks', '⭐', 'المهام'], ['yt', '▶️', 'يوتيوب'], ['chat', '💬', 'المحادثة']];
+  const TABS = [['home', '🏠', 'الرئيسية'], ['tasks', '⭐', 'المهام'], ['yt', '▶️', 'يوتيوب'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
 
   async function start(offline) {
     heroEl = h('div', { class: 'top' });
@@ -329,8 +329,69 @@
     if (S.tab === 'chat') return viewChat();
     mainEl.style.padding = '';
     const top = mainEl.scrollTop;
-    mainEl.replaceChildren(...{ home: viewHome, tasks: viewTasks, yt: viewYt }[S.tab]().filter(Boolean));
+    mainEl.replaceChildren(...{ home: viewHome, tasks: viewTasks, yt: viewYt, settings: viewSettings }[S.tab]().filter(Boolean),
+      h('p', { class: 'small muted center', style: 'margin:18px 0 6px' }, 'رقيب — الإصدار ' + appVersion()));
     mainEl.scrollTop = top;
+  }
+
+  // ================= الإصدار والتحديث =================
+  const REPO_API = 'https://api.github.com/repos/STOOOOF1/raqeeb/releases/latest';
+  const appVersion = () => N.info().version || 'معاينة';
+  const appCode = () => { try { return B && B.versionCode ? B.versionCode() : 0; } catch { return 0; } };
+  // U: idle | checking | latest | available | downloading | installing | confirm | done | error
+  const UPD = { state: 'idle', progress: 0, latest: null, url: null, error: '' };
+  let updEl = null;
+  window.onUpdateStatus = (s) => {
+    Object.assign(UPD, { state: s.state, progress: s.progress ?? UPD.progress, error: s.error || '' });
+    drawUpdate();
+  };
+
+  async function checkUpdate() {
+    if (!N.has || !B.installUpdate) { Object.assign(UPD, { state: 'error', error: 'التحديث من داخل التطبيق يعمل على جهاز الطفل فقط' }); return drawUpdate(); }
+    Object.assign(UPD, { state: 'checking', error: '' }); drawUpdate();
+    try {
+      const r = await fetch(REPO_API, { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const rel = await r.json();
+      const code = parseInt(String(rel.tag_name).replace(/\D+/g, ''), 10) || 0;
+      const asset = (rel.assets || []).find((a) => a.name === 'raqeeb.apk');
+      UPD.latest = code; UPD.url = asset ? asset.browser_download_url : '';
+      UPD.state = code > appCode() && asset ? 'available' : 'latest';
+    } catch (e) {
+      Object.assign(UPD, { state: 'error', error: 'تعذّر الاتصال بالإنترنت' });
+    }
+    drawUpdate();
+  }
+
+  function drawUpdate() {
+    if (!updEl || !updEl.isConnected) return;
+    const s = UPD.state;
+    const msg = {
+      idle: '', checking: 'جارٍ البحث عن تحديث…', latest: '✓ لديك أحدث إصدار',
+      available: `يتوفر إصدار جديد (1.2.${UPD.latest})`, downloading: `جارٍ التنزيل… ${UPD.progress}%`,
+      installing: 'جارٍ التثبيت… سيُعاد فتح التطبيق تلقائيًا', confirm: 'وافق على التثبيت في النافذة الظاهرة',
+      done: '✓ تم التحديث', error: '⚠️ ' + UPD.error,
+    }[s];
+    const busy = ['checking', 'downloading', 'installing', 'confirm'].includes(s);
+    const btn = s === 'available'
+      ? h('button', { class: 'btn ok', onclick: () => { Object.assign(UPD, { state: 'downloading', progress: 0 }); drawUpdate(); B.installUpdate(UPD.url); } }, '⬇️ تنزيل وتثبيت')
+      : h('button', { class: 'btn', disabled: busy, onclick: checkUpdate }, '🔄 تحديث');
+    updEl.replaceChildren(
+      h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', {}, 'الإصدار ' + appVersion()), msg ? h('div', { class: 'small muted' }, msg) : null), btn),
+      s === 'downloading' ? h('div', { style: 'height:6px;background:var(--line);border-radius:3px;margin-top:10px;overflow:hidden' },
+        h('div', { style: `height:100%;width:${UPD.progress}%;background:var(--pri)` })) : null);
+  }
+
+  function viewSettings() {
+    const info = N.info();
+    updEl = h('div', {});
+    drawUpdate();
+    return [
+      h('div', { class: 'card' }, h('h2', {}, '⚙️ الإعدادات'), updEl),
+      h('div', { class: 'card' }, h('h2', {}, 'معلومات الجهاز'),
+        h('div', { class: 'small muted' }, (info.model || '') + (info.android ? ' — أندرويد ' + info.android : '')),
+        S.d.child ? h('div', { class: 'small muted' }, 'مرتبط باسم: ' + S.d.child.name) : null),
+    ];
   }
 
   // ================= الرئيسية =================

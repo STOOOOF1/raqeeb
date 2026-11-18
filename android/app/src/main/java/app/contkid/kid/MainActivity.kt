@@ -109,6 +109,9 @@ class MainActivity : Activity() {
         super.onDestroy()
     }
 
+    /** تنفيذ JavaScript في الواجهة من أي خيط */
+    fun js(code: String) = web.post { web.evaluateJavascript(code, null) }
+
     @Deprecated("زر الرجوع يُمرَّر إلى الواجهة")
     override fun onBackPressed() {
         if (customView != null) web.webChromeClient?.onHideCustomView()
@@ -138,6 +141,15 @@ class MainActivity : Activity() {
         /** يُسقط القائمة المحفوظة فيعيد getApps القراءة من النظام */
         @JavascriptInterface
         fun refreshApps() { appsJson = null }
+
+        /** رقم البناء (يطابق android-N في إصدارات GitHub) */
+        @JavascriptInterface
+        fun versionCode(): Int = BuildConfig.VERSION_CODE
+
+        /** ينزّل آخر إصدار ويثبّته؛ الحالة تصل عبر window.onUpdateStatus */
+        @JavascriptInterface
+        fun installUpdate(url: String) =
+            Updater.start(this@MainActivity, if (url.startsWith("https://github.com/STOOOOF1/raqeeb/")) url else Updater.LATEST_APK)
 
         @JavascriptInterface
         fun getApps(): String {

@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <intent>
@@ -79,6 +80,8 @@
         </receiver>
 
         <receiver android:name=".PolicyReceiver" android:exported="false" />
+
+        <receiver android:name=".UpdateReceiver" android:exported="false" />
 
         <receiver android:name=".BootReceiver" android:exported="true">
             <intent-filter>

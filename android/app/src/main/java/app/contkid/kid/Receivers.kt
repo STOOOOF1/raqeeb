@@ -28,5 +28,7 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         Screen.init(context)
         Policy.enforce(context)
+        // بعد التحديث من داخل التطبيق نعيد فتح الواجهة
+        if (intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) Policy.bringToFront(context)
     }
 }
