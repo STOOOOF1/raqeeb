@@ -106,7 +106,7 @@
 | `grants` | فترات الوقت الممنوحة | `source` (`parent`/`task`/`quick`)، `minutes`، `status` (`ready`/`active`/`cancelled`)، `with_breaks`، `breaks_done`، `starts_at`، `ends_at` |
 | `penalties` | العقوبات (إنقاص من الوقت المكتسب) | `minutes`، `applied_sec` (ما خُصم فعلًا بالثواني)، `reason`، `by_name`، `day`، `expires_at` (نهاية يوم العقوبة: بعدها يسقط ما لم يُخصم) |
 | `break_items` | مكتبة الفوائد | `kind` (`question`/`fact`/`story`)، `title`، `body`، `options`، `answer`، `active`، `child_id` (فارغ = لكل الأطفال) |
-| `messages` | المحادثة | `sender` (`parent`/`child`)، `sender_name`، `kind` (`text`/`audio`)، `body`، `audio_path`، `read_at` |
+| `messages` | المحادثة (تُحذف يوميًا عند منتصف الليل بتوقيت الرياض مع ملفاتها الصوتية) | `sender` (`parent`/`child`)، `sender_name`، `kind` (`text`/`audio`)، `body`، `audio_path`، `read_at` |
 | `push_subs` | اشتراكات Push للوالدين | `endpoint` (PK)، `p256dh`، `auth`، `user_id` |
 | `client_ops` | معرّفات العمليات المؤجلة المنفّذة (لمنع التكرار) | `id`، `child_id` |
 | `app_secrets` | أسرار الخادم (مفاتيح VAPID، سر الربط بين القاعدة ودالة push) | `key`، `value` — **لا سياسات RLS عليه، فلا يقرؤه أي مستخدم** |
@@ -163,6 +163,7 @@
 | `server_now()` | الطفل | وقت الخادم لضبط فرق ساعة الجهاز |
 | `next_start` / `clamp_start` | داخلية | بداية الوقت الجديد بعد آخر وقت نشط؛ وحصر وقت البدء المرسل من الجهاز بين −36 ساعة و+12 ساعة |
 | `send_push(payload)` | داخلية | يستدعي دالة `push` عبر `pg_net` مع سر `hook_secret` |
+| `cleanup_chats()` | pg_cron | يستدعي دالة `cleanup` عبر `pg_net` مع سر `hook_secret` (المهمة `daily-chat-cleanup` كل يوم 21:00 UTC = منتصف الليل بالرياض) |
 | `notify_push()` | مُطلِق (trigger) | بعد إدراج رسالة من الطفل أو إنجاز معلّق: يرسل إشعارًا للوالدين |
 
 ### المُطلِقات (Triggers)
@@ -171,7 +172,7 @@
 - `submissions_push` — بعد INSERT على `submissions`.
 
 ### سجل الترحيلات
-`schema_tables` ← `schema_functions` ← `server_now_search_path` ← `push_notifications` ← `offline_breaks_cap` ← … ← `quick_grants_ready` ← `penalties`
+`schema_tables` ← `schema_functions` ← `server_now_search_path` ← `push_notifications` ← `offline_breaks_cap` ← … ← `quick_grants_ready` ← `penalties` ← `daily_chat_cleanup`
 
 ---
 
@@ -181,6 +182,7 @@
 |---|---|---|
 | `gate` | لا | التسجيل والانضمام والربط (القسم 4) |
 | `push` | لا (محمية بسر `x-hook-secret`) | `action: vapid` يعيد المفتاح العام (ويولّد المفاتيح أول مرة ويخزنها في `app_secrets`)؛ وإلا يرسل الإشعار لكل اشتراكات الأسرة ويحذف الاشتراكات المنتهية (404/410) |
+| `cleanup` | لا (محمية بسر `x-hook-secret`) | الحذف اليومي للمحادثات: يحذف رسائل ما قبل بداية اليوم الحالي (بتوقيت الرياض) على دفعات، ويحذف ملفاتها الصوتية من حاوية `audio` عبر Storage API (الحذف المباشر من `storage.objects` ممنوع) |
 | `yt` | نعم | `resolve`: يحوّل رابط قناة أو `@معرف` إلى `channel_id` واسم وصورة بقراءة صفحة القناة؛ `feed`: أحدث مقاطع القناة من خلاصة RSS — **بلا مفتاح YouTube API** |
 
 ---
@@ -222,7 +224,7 @@
   - نوع اللعبة ومستواها للألغاز.
   - المكافأة بالدقائق والتفعيل.
 - **الفوائد**: إعدادات الفاصل، ومكتبة الفوائد/الأسئلة/القصص المشتركة مع تصفية وتفعيل وحذف وإضافة النماذج.
-- **المحادثة**: نص وصوت، مع شارة الرسائل غير المقروءة.
+- **المحادثة**: نص وصوت، مع شارة الرسائل غير المقروءة. زر الصوت على طريقة واتساب: اضغط مطولًا وتحدّث ثم ارفع إصبعك للإرسال، أو اسحب للأعلى لتثبيت التسجيل والاستمرار دون ضغط (ثم إرسال أو حذف)، أو اسحب جانبًا للإلغاء. أقصى مدة دقيقتان ثم يتوقف ويُرسل تلقائيًا. والمحادثات تُحذف تلقائيًا كل يوم عند منتصف الليل.
 - **الإعدادات**:
   - اسم الطفل وحالة الربط ورمز الربط وإعادة الربط.
   - الحد اليومي، والكشك، واشتراط الموافقة، وحد المهام السريعة.

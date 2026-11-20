@@ -210,6 +210,7 @@
 
   function onChange(p) {
     if (p.table === 'messages') {
+      if (p.eventType === 'DELETE') { if (p.old?.id) S.chat?.remove(p.old.id); return; } // الحذف اليومي للمحادثات
       const m = p.new;
       if (p.eventType !== 'INSERT' || !m) return;
       if (S.chat) S.chat.add(m);
