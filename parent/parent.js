@@ -197,6 +197,7 @@
 
   function onChange(p) {
     if (p.table === 'messages') {
+      if (p.eventType === 'DELETE') { if (p.old?.id) S.chat?.remove(p.old.id); return; } // الحذف اليومي للمحادثات
       const m = p.new;
       if (p.eventType !== 'INSERT' || !m) return;
       const open = S.tab === 'chat' && S.chat && m.child_id === S.chatChild;
@@ -859,6 +860,7 @@
         h('button', { class: 'btn plain sm', onclick: () => { sessionStorage.removeItem('ck-unlocked'); location.reload(); } }, 'قفل التطبيق'),
         h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('تسجيل الخروج من هذا الجهاز؟')) { await disablePush(); await sb.auth.signOut(); sessionStorage.clear(); location.reload(); } } }, 'تسجيل الخروج')),
       pushOn() ? null : h('p', { class: 'small muted' }, 'فعّل الإشعارات ليصلك تنبيه بالمهام والرسائل حتى والتطبيق مغلق. على الآيفون: أضف التطبيق إلى الشاشة الرئيسية أولًا ثم افتحه من أيقونته.')));
+    if (CK.whatsNew) out.push(CK.whatsNew('parent'));
     return out;
   }
 

@@ -330,26 +330,39 @@ const CK = (() => {
   }
 
   // ---------- المحادثة ----------
+  const CHAT_MAX_SEC = 120; // أقصى مدة للرسالة الصوتية
+  const MIC_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.9V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.6a6 6 0 0 0 5-5.9Z"/></svg>';
+  const SEND_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M20.6 3.4 3.7 10.2c-.9.4-.8 1.6.1 1.9l6.2 1.9 1.9 6.2c.3.9 1.5 1 1.9.1l6.8-16.9c.3-.7-.4-1.4-1.1-1.1Z" transform="scale(-1,1) translate(-24,0)"/></svg>';
+  const TRASH_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Z"/></svg>';
   function Chat({ familyId, childId, sender, senderName }) {
     const msgs = h('div', { class: 'msgs' });
     const input = h('input', { type: 'text', placeholder: 'اكتب رسالة…', maxlength: 1000, enterkeyhint: 'send' });
-    const sendBtn = h('button', { class: 'btn', type: 'submit', title: 'إرسال' }, '➤');
-    const micBtn = h('button', { class: 'btn plain', type: 'button', title: 'رسالة صوتية' }, '🎤');
-    const recBox = h('div', { class: 'rec hidden' }, h('i'), h('span', {}, '0:00'),
-      h('button', { class: 'btn sm plain', type: 'button', onclick: () => stopRec(false) }, 'إلغاء'));
-    const form = h('form', { class: 'send' }, input, recBox, micBtn, sendBtn);
-    const root = h('div', { class: 'chat' }, msgs, form);
-    const seen = new Set();
-    let rec = null, timer = null;
+    const sendBtn = h('button', { class: 'wa-btn hidden', type: 'submit', title: 'إرسال', html: SEND_SVG });
+    // زر الميكروفون على طريقة واتساب: اضغط مطولًا وتحدّث، ارفع إصبعك للإرسال، اسحب للأعلى للتثبيت، اسحب جانبًا للإلغاء
+    const micBtn = h('button', { class: 'wa-btn mic', type: 'button', title: 'اضغط مطولًا للتسجيل', html: MIC_SVG });
+    const lockHint = h('div', { class: 'wa-lock hidden' }, h('span', {}, '🔒'), h('span', { class: 'arr' }, '⌃'));
+    const micWrap = h('div', { class: 'wa-mic' }, lockHint, micBtn);
+    const recTime = h('span', { class: 'rt' }, '0:00');
+    const recHint = h('span', { class: 'rh' }, h('span', { dir: 'ltr' }, '›'), ' اسحب للإلغاء');
+    const trashBtn = h('button', { class: 'wa-trash hidden', type: 'button', title: 'حذف التسجيل', html: TRASH_SVG, onclick: () => stopRec(false) });
+    const recBox = h('div', { class: 'rec hidden' }, trashBtn, h('i'), recTime, recHint);
+    const form = h('form', { class: 'send' }, input, recBox, micWrap, sendBtn);
+    const root = h('div', { class: 'chat' }, msgs, h('p', { class: 'chat-note' }, 'تُحذف المحادثات تلقائيًا كل يوم عند منتصف الليل'), form);
+    const seen = new Map();
+    let rec = null, timer = null, hold = null, locked = false, starting = false;
 
     function add(m, scroll = true) {
-      if (seen.has(m.id)) return; seen.add(m.id);
+      if (seen.has(m.id)) return;
       const mine = m.sender === sender;
-      msgs.append(h('div', { class: 'bubble' + (mine ? ' me' : '') },
+      const el = h('div', { class: 'bubble' + (mine ? ' me' : '') },
         m.kind === 'audio' ? audioPlayer(m.audio_path) : m.body,
-        h('div', { class: 'meta' }, (m.sender === 'parent' && m.sender_name ? m.sender_name + ' · ' : '') + clock(m.created_at))));
+        h('div', { class: 'meta' }, (m.sender === 'parent' && m.sender_name ? m.sender_name + ' · ' : '') + clock(m.created_at)));
+      seen.set(m.id, el);
+      msgs.append(el);
       if (scroll) msgs.scrollTop = msgs.scrollHeight;
     }
+    // تُستدعى عند حذف رسالة من الخادم (الحذف اليومي)
+    function remove(id) { seen.get(id)?.remove(); seen.delete(id); }
     async function load() {
       const rows = await q(sb.from('messages').select('*').eq('child_id', childId).order('created_at', { ascending: false }).limit(150));
       rows.reverse().forEach((m) => add(m, false));
@@ -361,35 +374,91 @@ const CK = (() => {
       $('#empty-chat', msgs)?.remove();
       add(row);
     }
+    // زر الإرسال يظهر عند الكتابة، والميكروفون عند الفراغ
+    const syncBtns = () => {
+      const typing = !rec && !starting && input.value.trim().length > 0;
+      micWrap.classList.toggle('hidden', typing || locked);
+      sendBtn.classList.toggle('hidden', !typing && !locked);
+    };
+    input.addEventListener('input', syncBtns);
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       if (rec) return stopRec(true);
       const body = input.value.trim();
       if (!body) return;
-      input.value = '';
-      if (!(await run(() => send({ kind: 'text', body })))) input.value = body;
+      input.value = ''; syncBtns();
+      if (!(await run(() => send({ kind: 'text', body })))) { input.value = body; syncBtns(); }
     });
-    micBtn.onclick = async () => {
-      try { rec = await startRecording(); } catch { return toast('اسمح باستخدام الميكروفون أولًا'); }
-      input.classList.add('hidden'); micBtn.classList.add('hidden'); recBox.classList.remove('hidden');
-      timer = setInterval(() => { recBox.children[1].textContent = countdown(rec.seconds() * 1000); }, 500);
-    };
+
+    function showRec(on) {
+      input.classList.toggle('hidden', on); recBox.classList.toggle('hidden', !on);
+      lockHint.classList.toggle('hidden', !on || locked);
+      micBtn.classList.toggle('holding', on && !locked);
+      trashBtn.classList.toggle('hidden', !locked); recHint.classList.toggle('hidden', locked);
+      recBox.classList.toggle('locked', locked);
+      micBtn.style.transform = ''; recHint.style.transform = '';
+      syncBtns();
+    }
+    function tick() {
+      if (!rec) return;
+      const s = rec.seconds();
+      recTime.textContent = countdown(s * 1000) + ' / ' + countdown(CHAT_MAX_SEC * 1000);
+      recBox.classList.toggle('near', s >= CHAT_MAX_SEC - 10);
+      if (s >= CHAT_MAX_SEC) { toast('انتهت المدة القصوى (دقيقتان) وأُرسل التسجيل'); stopRec(true); }
+    }
+    async function beginRec() {
+      starting = true; locked = false;
+      try { rec = await startRecording(); } catch { starting = false; hold = null; locked = false; showRec(false); return toast('اسمح باستخدام الميكروفون أولًا'); }
+      starting = false;
+      if (!hold && !locked) { const r = rec; rec = null; r.cancel(); return showRec(false); } // رفع الإصبع قبل جاهزية الميكروفون
+      try { navigator.vibrate?.(30); } catch { /* */ }
+      recTime.textContent = '0:00 / ' + countdown(CHAT_MAX_SEC * 1000);
+      timer = setInterval(tick, 250);
+    }
     async function stopRec(doSend) {
       clearInterval(timer);
-      input.classList.remove('hidden'); micBtn.classList.remove('hidden'); recBox.classList.add('hidden');
-      const r = rec; rec = null;
+      const r = rec; rec = null; hold = null; locked = false;
+      showRec(false);
       if (!r) return;
       if (!doSend) return r.cancel();
+      if (r.seconds() < 1) { r.cancel(); return toast('اضغط مطولًا على 🎤 وتحدّث، ثم ارفع إصبعك للإرسال'); }
       const blob = await r.stop();
       if (blob.size) await run(async () => send({ kind: 'audio', audio_path: await uploadAudio(blob, familyId, childId) }));
     }
+    micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
+    micBtn.addEventListener('pointerdown', (e) => {
+      if (rec || starting || (e.button && e.button !== 0)) return;
+      e.preventDefault();
+      try { micBtn.setPointerCapture(e.pointerId); } catch { /* */ }
+      hold = { id: e.pointerId, x: e.clientX, y: e.clientY };
+      showRec(true);
+      beginRec();
+    });
+    micBtn.addEventListener('pointermove', (e) => {
+      if (!hold || e.pointerId !== hold.id || locked) return;
+      const dx = e.clientX - hold.x, dy = hold.y - e.clientY;
+      if (dy > 70) { locked = true; hold = null; try { navigator.vibrate?.(20); } catch { /* */ } return showRec(true); } // تثبيت التسجيل
+      if (Math.abs(dx) > 100) return stopRec(false); // سحب جانبي = إلغاء
+      micBtn.style.transform = `translate(${dx}px, ${-Math.max(0, dy)}px) scale(1.45)`;
+      recHint.style.transform = `translateX(${dx / 2}px)`;
+      recHint.style.opacity = String(1 - Math.min(1, Math.abs(dx) / 100));
+    });
+    const release = (e, ok) => {
+      if (!hold || e.pointerId !== hold.id || locked) return;
+      hold = null;
+      if (starting) return showRec(false); // سيُلغى عند جاهزية الميكروفون
+      stopRec(ok);
+    };
+    micBtn.addEventListener('pointerup', (e) => release(e, true));
+    micBtn.addEventListener('pointercancel', (e) => release(e, false));
+
     // تعليم رسائل الطرف الآخر كمقروءة
     async function markRead() {
       const other = sender === 'parent' ? 'child' : 'parent';
       await sb.from('messages').update({ read_at: new Date().toISOString() }).eq('child_id', childId).eq('sender', other).is('read_at', null);
     }
     load().catch((e) => toast(errMsg(e)));
-    return { el: root, add, markRead, focus: () => { msgs.scrollTop = msgs.scrollHeight; } };
+    return { el: root, add, remove, markRead, focus: () => { msgs.scrollTop = msgs.scrollHeight; } };
   }
 
   function beep() {
