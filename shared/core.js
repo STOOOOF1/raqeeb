@@ -141,6 +141,8 @@ const CK = (() => {
 
   // ---------- منطق الفتح والقفل ----------
   // d = {child, schedules, tasks, subs, grants}
+  // الجهاز لا يُفتح إلا برصيد: الساعة اليومية أو وقت مكتسب أو إذن الوالدين.
+  // الجدول الأسبوعي (إن وُجد) يحدد متى يُسمح باستعمال الرصيد المكتسب فقط، ولا يمنح وقتًا بنفسه.
   function computeState(d, now = new Date()) {
     const c = d.child, day = dayStr(now), t0 = now.getTime();
     const mainList = d.tasks.filter((t) => t.kind === 'main' && t.active).map((task) => {
@@ -150,49 +152,73 @@ const CK = (() => {
     const mainsOk = mainList.every((m) => m.ok);
     const at = (t) => { const [H, M] = t.split(':').map(Number); const x = new Date(now); x.setHours(H, M, 0, 0); return x.getTime(); };
     const windows = d.schedules.filter((s) => s.weekday === now.getDay())
-      .map((s) => ({ s: at(s.start_time), e: at(s.end_time), sched: true })).filter((w) => w.e > w.s);
+      .map((s) => ({ s: at(s.start_time), e: at(s.end_time) })).filter((w) => w.e > w.s).sort((a, b) => a.s - b.s);
+    // بلا جدول أصلًا: الرصيد يُستعمل في أي وقت
+    const restricted = d.schedules.length > 0;
+    const curWin = windows.find((w) => w.s <= t0 && t0 < w.e) || null;
+    const inWindow = !restricted || !!curWin;
     const base = {
       mainList, mainsOk, unlocked: false, until: null, breakAt: null, breakGrant: null, why: null, reason: null,
       ready: d.grants.filter((g) => g.status === 'ready'),
-      nextWindow: windows.filter((w) => w.s > t0).sort((a, b) => a.s - b.s)[0] || null,
-      windows,
+      nextWindow: windows.find((w) => w.s > t0) || null,
+      windows, restricted, inWindow, canStart: false,
     };
+    const capLeft = () => (c.max_daily_min ? c.max_daily_min * 60000 - usedToday(d, now) : Infinity);
     if (c.force_lock) return { ...base, reason: 'force' };
-    // الطفل أوقف وقته مؤقتًا: الجهاز مقفل والوقت المتبقي محفوظ كما كان لحظة الإيقاف
+    // فترات الأرصدة النشطة: إذن الوالدين دائمًا، والمكتسب بشرط إنجاز المهام الرئيسية
+    const spans = (from) => d.grants.filter((g) => g.status === 'active' && g.ends_at && (g.source === 'parent' || mainsOk))
+      .map((g) => ({ s: new Date(g.starts_at).getTime(), e: new Date(g.ends_at).getTime(), g })).filter((i) => i.e > from);
+    // نهاية الوقت المتصل الذي يبدأ قبل اللحظة t (تُدمج الأرصدة المتتابعة)
+    const chainEnd = (iv, t) => {
+      const cur = iv.filter((i) => i.s <= t + 1000);
+      if (!cur.length) return null;
+      let until = Math.max(...cur.map((i) => i.e));
+      for (let changed = true; changed;) {
+        changed = false;
+        for (const i of iv) if (i.s <= until + 1000 && i.e > until) { until = i.e; changed = true; }
+      }
+      return until;
+    };
+    // الطفل أوقف وقته (أو توقف تلقائيًا بنهاية الوقت المسموح): الجهاز مقفل والباقي محفوظ كما كان لحظة الإيقاف
     if (c.paused_at) {
-      const pa = new Date(c.paused_at);
-      const was = computeState({ ...d, child: { ...c, paused_at: null } }, pa);
-      return { ...base, reason: 'pause', left: was.unlocked ? Math.max(0, was.until - pa.getTime()) : 0 };
+      const pa = new Date(c.paused_at).getTime();
+      const end = chainEnd(spans(pa), pa);
+      const left = end ? Math.max(0, Math.min(end - pa, capLeft())) : 0;
+      return { ...base, reason: 'pause', left, canResume: inWindow && left > 0 };
     }
 
-    const iv = [];
-    for (const g of d.grants) {
-      if (g.status !== 'active' || !g.ends_at) continue;
-      const e = new Date(g.ends_at).getTime();
-      if (e > t0 && (g.source === 'parent' || mainsOk)) iv.push({ s: new Date(g.starts_at).getTime(), e, g });
-    }
-    if (mainsOk) for (const w of windows) if (w.e > t0) iv.push(w);
-
+    const iv = spans(t0);
     const cur = iv.filter((i) => i.s <= t0);
-    if (!cur.length) return { ...base, reason: mainsOk ? 'time' : 'main' };
-
-    let until = Math.max(...cur.map((i) => i.e));
-    for (let changed = true; changed;) {
-      changed = false;
-      for (const i of iv) if (i.s <= until + 1000 && i.e > until) { until = i.e; changed = true; }
+    const parentCur = cur.filter((i) => i.g.source === 'parent');
+    if (!cur.length) {
+      if (!mainsOk) return { ...base, reason: 'main' };
+      return { ...base, reason: base.ready.length ? 'ready' : 'time', canStart: inWindow && capLeft() > 0 };
     }
-    const parentG = cur.find((i) => i.g && i.g.source === 'parent');
-    const inSched = cur.some((i) => i.sched);
+    // وقت مكتسب يجري خارج الوقت المسموح: يُقفل ويُحفظ الباقي (يوقفه جهاز الطفل تلقائيًا)
+    if (!inWindow && !parentCur.length) {
+      const lastEnd = Math.max(-Infinity, ...windows.filter((w) => w.e <= t0).map((w) => w.e));
+      const pauseAt = Math.min(t0, Math.max(lastEnd, Math.min(...cur.map((i) => i.s))));
+      const end = chainEnd(spans(pauseAt), pauseAt);
+      return { ...base, reason: 'window', pauseAt, left: end ? Math.max(0, end - pauseAt) : 0 };
+    }
+
+    let until = chainEnd(iv, t0);
     // الوقت الجاري الذي يُعوَّض فيه الفاصل: المنحة التي تنتهي عند نهاية الوقت المفتوح
-    const endG = iv.find((i) => i.g && Math.abs(i.e - until) < 1000);
-    const mainG = cur.find((i) => i.g && i.g.source === 'main');
-    const st = { ...base, unlocked: true, until, why: parentG ? 'parent' : inSched ? 'schedule' : mainG ? 'main' : 'task', endGrant: endG ? endG.g : null };
+    const endG = iv.find((i) => Math.abs(i.e - until) < 1000);
+    let cut = false;
+    if (restricted) {
+      if (curWin && until > curWin.e && !parentCur.some((i) => i.e >= curWin.e)) { until = curWin.e; cut = true; }
+      // إذن الوالدين خارج الوقت المسموح: ينتهي بانتهائه، وما بعده من وقت مكتسب ينتظر الوقت المسموح
+      if (!curWin) { const pe = Math.max(...parentCur.map((i) => i.e)); if (until > pe) { until = pe; cut = true; } }
+    }
+    const mainG = cur.find((i) => i.g.source === 'main');
+    const st = { ...base, unlocked: true, until, windowCut: cut, why: parentCur.length ? 'parent' : mainG ? 'main' : 'task',
+      endGrant: endG ? endG.g : null, canStart: inWindow };
     // الحد اليومي للاستخدام (إذن الوالدين المباشر يتجاوزه)
-    const cap = (c.max_daily_min || 0) * 60000;
-    if (cap && !parentG) {
-      const left = cap - usedToday(d, now);
+    if (!parentCur.length) {
+      const left = capLeft();
       if (left <= 0) return { ...base, reason: 'cap' };
-      if (t0 + left < st.until) { st.until = t0 + left; st.capped = true; st.endGrant = null; }
+      if (t0 + left < st.until) { st.until = t0 + left; st.capped = true; st.windowCut = false; st.endGrant = null; }
     }
     return st;
   }

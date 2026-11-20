@@ -69,8 +69,7 @@
       if (op.type === 'quick') {
         if (d.grants.some((g) => g.id === op.id) || op.rejected) continue;
         d.subs.unshift({ id: op.id, task_id: op.task, kind: op.kind, day: op.day, status: 'approved' });
-        d.grants.push({ id: op.id, source: 'quick', status: 'active', title: op.title, task_id: op.task, minutes: op.minutes,
-          starts_at: op.start, ends_at: op.end, breaks_done: 0 });
+        d.grants.push({ id: op.id, source: 'quick', status: 'ready', title: op.title, task_id: op.task, minutes: op.minutes, breaks_done: 0 });
       } else if (op.type === 'start') {
         const g = d.grants.find((x) => x.id === op.grant);
         if (g && g.status === 'ready' && !op.rejected) Object.assign(g, { status: 'active', starts_at: op.start, ends_at: op.end });
@@ -88,7 +87,7 @@
     if (flushing) return flushing;
     flushing = (async () => {
       for (const op of S.ops.filter((o) => !o.sentAt)) {
-        const r = op.type === 'quick' ? await sb.rpc('claim_quick', { p_task: op.task, p_day: op.day, p_id: op.id, p_start: op.start })
+        const r = op.type === 'quick' ? await sb.rpc('claim_quick', { p_task: op.task, p_day: op.day, p_id: op.id })
           : op.type === 'start' ? await sb.rpc('start_grant', { p_id: op.grant, p_start: op.start })
             : op.type === 'pause' || op.type === 'resume' ? await sb.rpc('pause_time', { p_pause: op.type === 'pause', p_at: op.at, p_op: op.id })
               : await sb.rpc('break_done', { p_id: op.grant, p_secs: op.secs, p_op: op.id });
@@ -297,6 +296,13 @@
     track(tm, day);
     const st = CK.computeState({ ...S.d, usedMs: S.U.used }, t);
     S.st = st;
+    // انتهى الوقت المسموح والرصيد يجري: يُوقف من لحظة انتهائه، والباقي محفوظ لوقت مسموح لاحق
+    if (st.reason === 'window' && st.left > 30000 && S.autoPause !== st.pauseAt) {
+      S.autoPause = st.pauseAt;
+      pushOp({ type: 'pause', at: iso(st.pauseAt) });
+      CK.beep(); toast('⏸ انتهى الوقت المسموح، وباقي وقتك محفوظ لك'); N.toast('⏸ انتهى الوقت المسموح، وباقي وقتك محفوظ لك');
+      return;
+    }
     if (st.capped) st.until = snap('until', st.until);
     // راحة للعينين بعد كل N دقيقة متواصلة من فتح الشاشة، على أي وقت مفتوح
     let breakDue = false;
@@ -335,6 +341,10 @@
         h('p', { class: 'muted small' }, 'يمكنك مراسلة والديك من تبويب المحادثة.')),
       h('button', { class: 'btn big block', onclick: closeOverlay }, 'حسنًا'));
     }
+    if (st.windowCut && st.until - tm <= 5 * 60000 && U.winWarned !== st.until) {
+      U.winWarned = st.until; save('ck-usage', U);
+      CK.beep(); toast(`⏳ ينتهي الوقت المسموح الساعة ${clock(st.until)}، وما يبقى من وقتك يُحفظ لك`);
+    }
     if (st.capped && st.until - tm <= 10 * 60000 && U.warned !== day) {
       U.warned = day; save('ck-usage', U);
       CK.beep(); toast('⏳ بقيت 10 دقائق من وقتك اليومي'); N.toast('⏳ بقيت 10 دقائق من وقتك اليومي');
@@ -347,18 +357,22 @@
     let line, big = '', btn = null;
     if (st.unlocked) {
       line = st.capped && st.until - t.getTime() < 3600000 ? 'آخر وقتك اليومي ⏳'
-        : { parent: 'سمح لك والداك 🎁', schedule: 'وقت اللعب الرسمي', task: 'وقت كسبته بإنجازك 💪', main: 'ساعتك اليومية ⭐' }[st.why];
+        : { parent: 'سمح لك والداك 🎁', task: 'وقت كسبته بإنجازك 💪', main: 'ساعتك اليومية ⭐' }[st.why];
       big = CK.countdown(st.until - t.getTime());
-      // الوقت الرسمي من الجدول لا يُؤجَّل، فلا إيقاف فيه
-      if (st.why !== 'schedule' && !S.breakOpen) btn = 'pause';
+      if (!S.breakOpen) btn = 'pause';
     } else if (st.reason === 'pause') {
-      line = 'أوقفت وقتك مؤقتًا ⏸ — الباقي محفوظ لك';
+      line = st.canResume ? 'وقتك متوقف ⏸ — الباقي محفوظ لك'
+        : st.nextWindow ? `وقتك محفوظ ⏸ — تستأنفه الساعة ${clock(st.nextWindow.s)}` : 'وقتك محفوظ ⏸ — تستأنفه في الوقت المسموح';
       big = CK.countdown(st.left);
-      btn = 'resume';
+      btn = st.canResume ? 'resume' : null;
+    } else if (st.reason === 'window') line = 'انتهى الوقت المسموح الآن';
+    else if (st.reason === 'ready') {
+      line = st.canStart ? 'لديك وقت كسبته، ابدأه من الأسفل 🎁'
+        : st.nextWindow ? `لديك وقت كسبته، تبدؤه الساعة ${clock(st.nextWindow.s)}` : 'لديك وقت كسبته، تبدؤه في الوقت المسموح';
     } else if (st.reason === 'cap') line = `انتهى حدّك اليومي (${capText(c.max_daily_min)})، نلتقي غدًا 🌙`;
     else if (st.reason === 'force') line = 'الجهاز مقفل من والديك';
     else if (st.reason === 'main') line = 'أنجز مهامك الرئيسية ليُفتح الجهاز';
-    else line = st.nextWindow ? `يفتح الجهاز الساعة ${clock(st.nextWindow.s)}` : 'انتهى وقت اللعب اليوم';
+    else line = 'أنجز مهمة لتكسب وقتًا 💪';
     const key = (st.unlocked ? 'u' : 'l') + line + btn;
     if (heroEl.dataset.key !== key) {
       heroEl.dataset.key = key;
@@ -372,7 +386,7 @@
           } }, '▶ استئناف الوقت')
           : null;
       heroEl.replaceChildren(h('div', { class: 'hero' + (st.unlocked ? '' : ' locked') },
-        h('div', { class: 'row between' }, h('b', {}, 'مرحبًا ' + c.name), h('span', {}, st.unlocked ? '🔓' : btn === 'resume' ? '⏸' : '🔒')),
+        h('div', { class: 'row between' }, h('b', {}, 'مرحبًا ' + c.name), h('span', {}, st.unlocked ? '🔓' : st.reason === 'pause' ? '⏸' : '🔒')),
         h('div', {}, line), h('div', { class: 'big', id: 'cd' }), pz, h('div', { class: 'small', id: 'use', style: 'opacity:.85' })));
     }
     const cd = $('#cd', heroEl);
@@ -490,8 +504,10 @@
     if (!st.ready.length) return null;
     return h('div', { class: 'card soft' }, h('h2', {}, '🎁 وقت كسبته'),
       st.mainsOk ? null : h('p', { class: 'small' }, 'يبدأ بعد إنجاز مهامك الرئيسية.'),
+      st.mainsOk && !st.inWindow ? h('p', { class: 'small' }, st.nextWindow ? `تبدؤه في الوقت المسموح، الساعة ${clock(st.nextWindow.s)}.` : 'تبدؤه في الوقت المسموح من جدولك.') : null,
+      st.mainsOk && st.inWindow ? h('p', { class: 'small muted' }, 'ابدأ ما تشاء منها، وكل وقت يبدأ بعد انتهاء الذي قبله.') : null,
       st.ready.map((g) => h('div', { class: 'item' }, h('span', { class: 'grow' }, (g.source === 'main' ? '⭐ ' : '') + (g.title || 'وقت إضافي')),
-        h('button', { class: 'btn', disabled: !st.mainsOk || st.reason === 'cap' || st.reason === 'pause', onclick: () => {
+        h('button', { class: 'btn', disabled: !st.mainsOk || !st.canStart, onclick: () => {
           const s = nextStart();
           pushOp({ type: 'start', grant: g.id, start: iso(s), end: iso(s + g.minutes * 60000) });
           toast('بدأ وقتك، استمتع!');
@@ -744,13 +760,12 @@
   }
 
   // ---- المهام السريعة ----
-  // يُفتح الوقت فورًا حتى بلا إنترنت، ويُسجَّل على الخادم عند عودة الاتصال
+  // يُضاف الوقت رصيدًا جاهزًا فورًا حتى بلا إنترنت، ويبدؤه الطفل متى شاء في الوقت المسموح
   function claim(t) {
     closeOverlay(); S.tab = 'home';
-    const s = nextStart();
-    pushOp({ type: 'quick', task: t.id, kind: t.kind, title: t.title, minutes: t.reward_min, day: today(), start: iso(s), end: iso(s + t.reward_min * 60000) });
+    pushOp({ type: 'quick', task: t.id, kind: t.kind, title: t.title, minutes: t.reward_min, day: today() });
     render();
-    toast(S.st.reason === 'cap' ? `أحسنت! أضيف ${t.reward_min} دقيقة، لكنك بلغت حدك اليومي` : `أحسنت! فُتح لك ${t.reward_min} دقيقة 🎉`);
+    toast(S.st.reason === 'cap' ? `أحسنت! أضيف ${t.reward_min} دقيقة لرصيدك، لكنك بلغت حدك اليومي` : `أحسنت! أضيف ${t.reward_min} دقيقة لرصيدك 🎉`);
   }
 
   // مقطع ← (نص إن وُجد) ← اختبار؛ عند الخطأ يعيد بأسئلة مختلفة، ويمكنه إعادة مشاهدة المقطع

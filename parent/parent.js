@@ -257,12 +257,14 @@
     let text, cls = 'bad';
     if (st.unlocked) {
       cls = 'ok';
-      text = `مفتوح حتى ${clock(st.until)} · ` + { parent: 'بإذن مباشر', schedule: 'الوقت الرسمي', task: 'وقت مكتسب بمهمة', main: 'ساعة المهام الرئيسية' }[st.why];
-    } else if (st.reason === 'pause') text = `متوقف مؤقتًا من الطفل · بقي ${Math.ceil(st.left / 60000)} دقيقة`;
+      text = `مفتوح حتى ${clock(st.until)} · ` + { parent: 'بإذن مباشر', task: 'وقت مكتسب بمهمة', main: 'ساعة المهام الرئيسية' }[st.why];
+    } else if (st.reason === 'pause') text = `متوقف · بقي له ${Math.ceil(st.left / 60000)} دقيقة محفوظة` + (st.canResume ? '' : ' تُستأنف في الوقت المسموح');
+    else if (st.reason === 'window') text = `مقفل · انتهى الوقت المسموح وبقي له ${Math.ceil(st.left / 60000)} دقيقة محفوظة`;
+    else if (st.reason === 'ready') text = 'مقفل · لديه رصيد لم يبدأه' + (st.inWindow ? '' : st.nextWindow ? ` (يبدؤه بعد ${clock(st.nextWindow.s)})` : ' (خارج الوقت المسموح)');
     else if (st.reason === 'cap') text = 'مقفل · بلغ الحد اليومي للاستخدام';
     else if (st.reason === 'force') text = 'مقفل يدويًا من الوالدين';
     else if (st.reason === 'main') text = 'مقفل · بانتظار إنجاز المهام الرئيسية';
-    else text = 'مقفل · خارج الأوقات المسموحة' + (st.nextWindow ? ` (يفتح ${clock(st.nextWindow.s)})` : '');
+    else text = 'مقفل · لا رصيد وقت حاليًا';
     return { st, text, cls };
   }
 
@@ -381,7 +383,7 @@
     const add = () => {
       const days = WEEKDAYS.map((n, i) => h('label', {}, h('input', { type: 'checkbox', value: i, checked: true }), n));
       const from = h('input', { type: 'time', value: '16:00' }), to = h('input', { type: 'time', value: '18:00' });
-      modal('إضافة وقت رسمي', [h('div', { class: 'days' }, days),
+      modal('إضافة وقت مسموح', [h('div', { class: 'days' }, days),
         h('div', { class: 'row' }, h('div', { class: 'grow' }, field('من', from)), h('div', { class: 'grow' }, field('إلى', to)))], {
         onOk: async () => {
           const sel = days.map((l) => l.firstChild).filter((x) => x.checked).map((x) => +x.value);
@@ -393,7 +395,7 @@
       });
     };
     return [
-      h('div', { class: 'card soft' }, h('p', {}, `الأوقات التي يُفتح فيها جهاز ${c.name} تلقائيًا بعد إنجاز مهامه الرئيسية.`),
+      h('div', { class: 'card soft' }, h('p', {}, `الأوقات التي يُسمح فيها لـ${c.name} باستعمال رصيده (ساعته اليومية ووقته المكتسب). الجدول لا يمنح وقتًا بنفسه، وإذا انتهى الوقت المسموح ورصيده يجري يتوقف ويُحفظ الباقي. بلا أي وقت هنا يستعمل رصيده متى شاء.`),
         h('button', { class: 'btn', onclick: add }, '＋ إضافة وقت')),
       ...WEEKDAYS.map((name, i) => {
         const day = rows.filter((r) => r.weekday === i);
@@ -462,7 +464,7 @@
   const TASK_TABS = [['main', 'الرئيسية', ['main']], ['extra', 'نصف ساعة', ['quran', 'matn', 'chore', 'draw']],
     ['quick', 'سريعة (ربع ساعة)', ['reading', 'puzzle']]];
   const TASK_HELP = {
-    main: 'مهام يومية لا يُفتح الجهاز في وقته الرسمي حتى يُنجزها الطفل وتصلك للمتابعة. يمكنك إرفاق مقطع يوتيوب وأسئلة: يشاهده كاملًا ثم يُختبر.',
+    main: 'مهام يومية إذا أنجزها الطفل كسب ساعته اليومية (60 دقيقة يبدؤها متى شاء في الوقت المسموح)، ولا يُستعمل أي وقت مكتسب قبلها. يمكنك إرفاق مقطع يوتيوب وأسئلة: يشاهده كاملًا ثم يُختبر.',
     extra: 'يسجّل الطفل صوته بالحفظ، أو يكتب الحروف ويرسم بإصبعه فيصلك الرسم صورةً، أو يبلّغ بإنجاز المهمة المنزلية، وبعد إجازتك يحصل على الوقت كاملًا مع فواصل قصيرة.',
     quick: 'تُصحَّح تلقائيًا: يقرأ نصًا أو يشاهد مقطع يوتيوب ثم يُختبر، أو يحل لعبة ذهنية، فيُفتح له الوقت مباشرة.',
   };
@@ -600,7 +602,7 @@
               .map(([v, t]) => h('option', { value: v, selected: c.break_mode === v }, t)))),
         num('بعد كل (دقائق متواصلة)', 'break_interval_min', 5, 120),
         num('مدة راحة العينين (ثوانٍ)', 'break_max_sec', 30, 600),
-        h('label', { class: 'switch' }, h('div', {}, 'الفواصل أثناء السماح المباشر مني', h('div', { class: 'small muted' }, 'تعمل دائمًا في الوقت الرسمي والوقت المكتسب.')),
+        h('label', { class: 'switch' }, h('div', {}, 'الفواصل أثناء السماح المباشر مني', h('div', { class: 'small muted' }, 'تعمل دائمًا في الساعة اليومية والوقت المكتسب.')),
           h('input', { type: 'checkbox', checked: c.breaks_on_parent, onchange: (e) => save({ breaks_on_parent: e.target.checked }) }))),
       card(`📚 مكتبة الفوائد (${S.d.breaks.length})`,
         h('p', { class: 'small muted' }, 'مشتركة بين كل أطفالك، وتظهر بترتيب عشوائي. أوقف أي عنصر بإزالة علامته دون حذفه.'),
