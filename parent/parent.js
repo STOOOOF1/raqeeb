@@ -128,7 +128,7 @@
       const fam = S.me.family_id;
       const since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
       const nowIso = new Date().toISOString();
-      const [family, children, members, schedules, yt, tasks, subs, grants, breaks, unread, templates] = await Promise.all([
+      const [family, children, members, schedules, yt, tasks, subs, grants, breaks, unread, templates, penalties] = await Promise.all([
         q(sb.from('families').select('id,name').eq('id', fam).single()),
         q(sb.from('children').select('*').order('created_at')),
         q(sb.from('members').select('*').eq('role', 'parent').order('created_at')),
@@ -140,12 +140,13 @@
         q(sb.from('break_items').select('*').order('created_at')),
         q(sb.from('messages').select('child_id').eq('sender', 'child').is('read_at', null)),
         q(sb.from('templates').select('*').order('sort').order('created_at')),
+        q(sb.from('penalties').select('*').gte('day', since).order('created_at', { ascending: false })),
       ]);
       S.family = family; S.children = children;
       children.forEach(capAlert);
       if (!cur()) { S.cur = children[0]?.id || null; }
       const apps = S.cur ? await q(sb.from('apps').select('*').eq('child_id', S.cur).order('label')) : [];
-      S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks, templates };
+      S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks, templates, penalties };
       S.unread = {};
       for (const m of unread) S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
       render();
@@ -322,6 +323,39 @@
     }, withUsage.checked ? 'صُفّرت مهام اليوم ووقته' : 'صُفّرت مهام اليوم') });
   }
 
+  // عقوبة: تُنقص من الوقت الذي كسبه الطفل (الجاهز ثم الجاري)، وما لا يكفيه رصيده يُخصم مما يكسبه لاحقًا اليوم
+  function penalize(c, minutes) {
+    const reason = h('input', { type: 'text', maxlength: 200, placeholder: 'مثال: لم يرتب غرفته' });
+    modal(`⛔ عقوبة: إنقاص ${minutes === 15 ? 'ربع ساعة' : minutes === 30 ? 'نصف ساعة' : minutes + ' دقيقة'}`, h('div', { class: 'col' },
+      h('p', {}, `يُنقص ${minutes} دقيقة من الوقت الذي كسبه ${c.name}: أولًا من الأوقات التي لم يبدأها، ثم من وقته الجاري.`),
+      h('p', { class: 'small muted' }, 'إن لم يكفِ رصيده يُخصم الباقي مما يكسبه لاحقًا اليوم. لا يُمس إذنك المباشر.'),
+      field('السبب (يظهر للطفل)', reason)),
+    { okText: 'تطبيق العقوبة', onOk: () => run(async () => {
+      const end = new Date(); end.setHours(24, 0, 0, 0);
+      const r = await q(sb.rpc('penalize', { p_child: c.id, p_minutes: minutes, p_reason: reason.value, p_day: CK.dayStr(), p_until: end.toISOString() }));
+      await reload();
+      const got = Math.ceil(r.applied_sec / 60);
+      toast(got >= minutes ? `نقص من وقت ${c.name} ${minutes} دقيقة` : `خُصم ${got} دقيقة الآن، والباقي (${minutes - got}) يُخصم مما يكسبه اليوم`);
+    }) });
+  }
+  function penaltiesCard(c) {
+    const list = mine(S.d.penalties || [], c).filter((p) => p.day === CK.dayStr());
+    if (!list.length) return null;
+    const total = list.reduce((a, p) => a + p.minutes, 0);
+    return card(`عقوبات اليوم (−${total} دقيقة)`, list.map((p) => {
+      const got = Math.ceil(p.applied_sec / 60), owed = p.minutes - got;
+      return h('div', { class: 'item' },
+        h('span', { class: 'avatar' }, '⛔'),
+        h('div', { class: 'grow' }, h('b', {}, `−${p.minutes} دقيقة`), p.reason ? ' · ' + p.reason : '',
+          h('div', { class: 'small muted' }, `${p.by_name ? p.by_name + ' · ' : ''}${clock(p.created_at)} · ` +
+            (owed > 0 ? `خُصم ${got}، ويُخصم ${owed} مما يكسبه اليوم` : 'خُصمت كاملة'))),
+        h('button', { class: 'iconbtn', title: 'إلغاء العقوبة', onclick: async () => {
+          if (await confirmBox(got ? `إلغاء العقوبة؟ يُعاد له ${got} دقيقة وقتًا جاهزًا.` : 'إلغاء العقوبة؟', 'إلغاء العقوبة'))
+            run(async () => { await q(sb.rpc('cancel_penalty', { p_id: p.id })); await reload(); }, 'أُلغيت العقوبة');
+        } }, '↩'));
+    }));
+  }
+
   function viewHome(c) {
     const { st, text, cls } = stateLine(c);
     const out = [];
@@ -348,7 +382,11 @@
         h('button', { class: 'btn ghost', onclick: () => resetTasks(c) }, '🔄 تصفير المهام والوقت'),
         activeParent.length ? h('button', { class: 'btn plain', onclick: () => run(async () => {
           await q(sb.from('grants').update({ status: 'cancelled' }).in('id', activeParent.map((g) => g.id))); await reload();
-        }, 'أُلغي الإذن') }, 'إلغاء الإذن المباشر') : null)));
+        }, 'أُلغي الإذن') }, 'إلغاء الإذن المباشر') : null),
+      h('div', { class: 'row wrap' },
+        h('button', { class: 'btn bad', onclick: () => penalize(c, 15) }, '⛔ عقوبة ربع ساعة'),
+        h('button', { class: 'btn bad', onclick: () => penalize(c, 30) }, '⛔ عقوبة نصف ساعة'))));
+    out.push(penaltiesCard(c));
 
     const pending = S.d.subs.filter((s) => s.status === 'pending');
     out.push(card(`بانتظار مراجعتك (${pending.length})`,

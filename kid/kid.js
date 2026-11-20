@@ -33,8 +33,8 @@
   const S = {
     me: null, tab: 'home', offset: 0, st: null, sig: '', chat: null, unread: 0, breakOpen: false, overlay: null,
     // raw: آخر بيانات من الخادم — d: نفسها بعد تطبيق العمليات التي لم تُزامن بعد
-    raw: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
-    d: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [] },
+    raw: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
+    d: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
     ops: load('ck-ops', []),
     // عدّاد وقت الشاشة: used = اليوم، since = المتواصل منذ آخر راحة، rest = مدة الإطفاء المتصل
     U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, off: null, warned: '' },
@@ -160,7 +160,7 @@
       await flush();
       const fetchedAt = Date.now();
       const cid = S.me.child_id, since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
-      const [srv, child, schedules, apps, yt, tasks, subs, grants, breaks, unread] = await Promise.all([
+      const [srv, child, schedules, apps, yt, tasks, subs, grants, breaks, unread, penalties] = await Promise.all([
         q(sb.rpc('server_now')),
         q(sb.from('children').select('*').eq('id', cid).maybeSingle()),
         q(sb.from('schedules').select('*')),
@@ -171,13 +171,14 @@
         q(sb.from('grants').select('*').or(`status.eq.ready,ends_at.gte.${new Date().toISOString()}`).order('created_at')),
         q(sb.from('break_items').select('*').eq('active', true)),
         q(sb.from('messages').select('id', { count: 'exact', head: false }).eq('sender', 'parent').is('read_at', null)),
+        q(sb.from('penalties').select('*').gte('day', since).order('created_at', { ascending: false })),
       ]);
       if (!child) { // فُصل هذا الجهاز (رُبط جهاز آخر أو حُذف الطفل)
         await sb.auth.signOut(); localStorage.removeItem('ck-kid-cache'); return location.reload();
       }
       S.offset = new Date(srv).getTime() - Date.now();
       if (Math.abs(S.offset) < 5000) S.offset = 0;
-      S.raw = { child, schedules, apps, yt, tasks, subs, grants, breaks };
+      S.raw = { child, schedules, apps, yt, tasks, subs, grants, breaks, penalties };
       checkUsageReset(child);
       // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
       S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
@@ -225,6 +226,10 @@
       && p.new.apps_refresh_at && p.new.apps_refresh_at !== localStorage.getItem('ck-apps-refresh')) {
       localStorage.setItem('ck-apps-refresh', p.new.apps_refresh_at);
       reportApps(true);
+    }
+    if (p.table === 'penalties' && p.eventType === 'INSERT' && p.new?.child_id === S.me?.child_id) {
+      const t = `⛔ عقوبة: نقص ${p.new.minutes} دقيقة من وقتك` + (p.new.reason ? ' — ' + p.new.reason : '');
+      CK.beep(); toast(t); N.toast(t);
     }
     if (p.table === 'grants' && p.eventType === 'INSERT' && p.new.source === 'parent') { CK.beep(); N.toast('🎉 سمح لك والداك بوقت إضافي'); }
     if (p.table === 'submissions' && p.eventType === 'UPDATE' && p.old?.status !== p.new.status) {
@@ -514,11 +519,21 @@
         } }, `ابدأ ${g.minutes} دقيقة`))));
   }
 
+  // عقوبات اليوم: تُنقص من وقته المكتسب، وما لم يكفه رصيده يُخصم مما يكسبه لاحقًا اليوم
+  function penaltiesCard() {
+    const list = (S.d.penalties || []).filter((p) => p.day === today());
+    if (!list.length) return null;
+    const owed = list.reduce((a, p) => a + p.minutes - Math.ceil(p.applied_sec / 60), 0);
+    return h('div', { class: 'card warn' }, h('h2', {}, '⛔ عقوبات اليوم'),
+      list.map((p) => h('div', { class: 'item' }, h('b', {}, `−${p.minutes} دقيقة`), h('span', { class: 'grow small' }, p.reason || ''))),
+      owed > 0 ? h('p', { class: 'small' }, `بقي ${owed} دقيقة تُخصم من الوقت الذي تكسبه اليوم.`) : null);
+  }
+
   function viewHome() {
     const st = S.st, out = [];
     if (!S.d.child.kiosk_enabled) out.push(h('div', { class: 'card warn' }, h('p', {}, 'وضع القفل متوقف مؤقتًا من الوالدين.')));
     if (!st.mainsOk) out.push(mainTasksCard());
-    out.push(readyCard());
+    out.push(readyCard(), penaltiesCard());
     if (st.unlocked) {
       const apps = S.d.apps;
       out.push(h('div', { class: 'card' }, h('h2', {}, 'تطبيقاتي'),
