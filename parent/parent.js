@@ -816,6 +816,31 @@
     });
   }
 
+  // فتح وقت لكل الأبناء دفعة واحدة بمدة يحددها الوالد بحرية (ساعات ودقائق)
+  function allowAllCard() {
+    const hrs = h('input', { type: 'number', min: 0, max: 24, value: 0, inputmode: 'numeric', style: 'width:80px' });
+    const mins = h('input', { type: 'number', min: 0, max: 59, value: 30, inputmode: 'numeric', style: 'width:80px' });
+    const go = async () => {
+      const total = Math.max(0, Math.floor(+hrs.value || 0)) * 60 + Math.max(0, Math.floor(+mins.value || 0));
+      if (total < 1) return toast('حدّد مدة دقيقة واحدة على الأقل');
+      if (total > 1440) return toast('أقصى مدة 24 ساعة');
+      const kids = S.children;
+      if (!(await confirmBox(`فتح ${hmin(total)} ساعة لكل الأبناء (${kids.map((k) => k.name).join('، ')}) ابتداءً من الآن؟ يتجاوز الجدول والحد اليومي ويلغي القفل اليدوي.`, 'افتح للجميع'))) return;
+      await run(async () => {
+        const res = await Promise.allSettled(kids.map((k) => q(sb.rpc('allow_now', { p_child: k.id, p_minutes: total, p_title: 'إذن للجميع من ' + S.me.name }))));
+        await reload();
+        const bad = kids.filter((_, i) => res[i].status === 'rejected');
+        if (bad.length) throw new Error('تعذر الفتح لـ: ' + bad.map((k) => k.name).join('، '));
+      }, `تم فتح ${hmin(total)} ساعة لكل الأبناء`);
+    };
+    return card('🔓 فتح وقت لكل الأبناء',
+      h('p', { class: 'small muted' }, 'حدّد المدة بحرية، فيُفتح جهاز كل طفل الآن بإذن مباشر منك.'),
+      h('div', { class: 'row wrap', style: 'gap:10px;align-items:center' },
+        h('label', { class: 'row', style: 'gap:6px' }, hrs, h('span', {}, 'ساعة')),
+        h('label', { class: 'row', style: 'gap:6px' }, mins, h('span', {}, 'دقيقة'))),
+      h('button', { class: 'btn', onclick: go }, 'افتح للجميع الآن'));
+  }
+
   function viewSettings(c) {
     const out = [];
     const save = (patch, msg) => run(async () => { await q(sb.from('children').update(patch).eq('id', c.id)); await reload(); }, msg);
@@ -845,6 +870,7 @@
             if (await confirmBox(`حذف ${c.name} وكل مهامه ورسائله نهائيًا؟ لا يمكن التراجع.`, 'حذف نهائي')) run(async () => { await q(sb.from('children').delete().eq('id', c.id)); S.cur = null; await reload(); }, 'تم الحذف');
           } }, 'حذف الطفل'))));
     }
+    if (S.children.length) out.push(allowAllCard());
     const owner = S.d.members.find((m) => m.user_id === S.me.user_id)?.is_owner;
     const passInput = () => h('input', { type: 'password', maxlength: 72, autocomplete: 'new-password', dir: 'ltr' });
     const resetPass = (m) => {
