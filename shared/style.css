@@ -166,3 +166,12 @@ details.qbox summary { cursor: pointer; }
 .days input { display: none; } .days label:has(input:checked) { background: var(--pri); color: #fff; border-color: var(--pri); }
 .avatar { width: 44px; height: 44px; border-radius: 50%; background: var(--pri-soft); display: grid; place-items: center; font-size: 1.3rem; flex: none; }
 .qbox { border: 1.5px dashed var(--line); border-radius: 12px; padding: 10px; display: flex; flex-direction: column; gap: 6px; }
+
+/* ما الجديد (قسم مطوي في الإعدادات) */
+.whatsnew summary { display: flex; align-items: center; cursor: pointer; font-weight: 700; list-style: none; }
+.whatsnew summary::-webkit-details-marker { display: none; }
+.whatsnew summary::after { content: '⌄'; margin-inline-start: 8px; color: var(--muted); transition: transform .2s; }
+.whatsnew[open] summary::after { transform: rotate(180deg); }
+.whatsnew .wn-group { margin-top: 10px; }
+.whatsnew .wn-group.old { opacity: .75; }
+.whatsnew ul { margin: 4px 0 0; padding-inline-start: 20px; line-height: 1.7; font-size: .92rem; }

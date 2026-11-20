@@ -472,6 +472,7 @@
     if (UPD.state === 'idle' && N.has) setTimeout(checkUpdate, 0); // يبحث عن تحديث تلقائيًا عند فتح الإعدادات
     return [
       h('div', { class: 'card' }, h('h2', {}, '⚙️ الإعدادات'), updEl),
+      CK.whatsNew?.('kid'),
       h('div', { class: 'card' }, h('h2', {}, 'معلومات الجهاز'),
         h('div', { class: 'small muted' }, (info.model || '') + (info.android ? ' — أندرويد ' + info.android : '')),
         S.d.child ? h('div', { class: 'small muted' }, 'مرتبط باسم: ' + S.d.child.name) : null),
