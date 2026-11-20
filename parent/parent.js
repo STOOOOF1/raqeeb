@@ -107,15 +107,44 @@
   }
 
   // ================= الهيكل والبيانات =================
-  let chipsEl, mainEl, navEl;
-  const TABS = [['home', '🏠', 'الرئيسية'], ['schedule', '🕒', 'الأوقات'], ['apps', '📱', 'التطبيقات'],
-    ['tasks', '✅', 'المهام'], ['breaks', '💡', 'الفوائد'], ['templates', '📚', 'القوالب'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
+  let chipsEl, mainEl, navEl, barEl;
+  // [المعرّف، الأيقونة، الاسم، رئيسي في الشريط السفلي؟، وصف في ورقة «المزيد»]
+  const TABS = [['home', 'home', 'الرئيسية', 1], ['tasks', 'tasks', 'المهام', 1], ['schedule', 'clock', 'الأوقات', 1], ['chat', 'chat', 'المحادثة', 1],
+    ['apps', 'apps', 'التطبيقات', 0, 'السماح بتطبيقات الجهاز وقنوات يوتيوب'], ['breaks', 'bulb', 'الفوائد', 0, 'فواصل راحة العين والأسئلة والقصص'],
+    ['templates', 'book', 'القوالب', 0, 'خطط جاهزة تطبّقها على طفلك'], ['settings', 'settings', 'الإعدادات', 0, 'الطفل والأسرة والمظهر والإشعارات']];
+  const tabName = (id) => (TABS.find((t) => t[0] === id) || [])[2] || '';
+
+  // الانتقال بين التبويبات: يبدأ التبويب من أعلاه مع حركة دخول خفيفة
+  function goTab(id) {
+    if (S.tab === id) { mainEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    S.tab = id;
+    mainEl.scrollTop = 0;
+    mainEl.classList.remove('enter'); void mainEl.offsetWidth; mainEl.classList.add('enter');
+    clearTimeout(goTab.t); goTab.t = setTimeout(() => mainEl.classList.remove('enter'), 500);
+    render();
+    mainEl.scrollTop = 0;
+  }
+
+  // ورقة «المزيد» السفلية لبقية التبويبات على الجوال
+  function moreSheet() {
+    const dlg = h('dialog', { class: 'sheet' });
+    const close = () => { if (dlg.open) dlg.close(); };
+    dlg.append(h('div', { class: 'grab' }), h('h3', {}, 'المزيد'),
+      h('div', { class: 'tiles' }, TABS.filter((t) => !t[3]).map(([id, ic, name, , desc]) =>
+        h('button', { class: 'tile' + (S.tab === id ? ' on' : ''), type: 'button', onclick: () => { close(); goTab(id); } },
+          h('span', { class: 'ti' }, CKTheme.icon(ic)), h('b', {}, name), h('span', {}, desc)))));
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); }); // الضغط خارج الورقة يغلقها
+    dlg.addEventListener('close', () => dlg.remove());
+    document.body.append(dlg);
+    dlg.showModal();
+  }
 
   async function start() {
     chipsEl = h('div', { class: 'chips' });
+    barEl = h('div', { class: 'appbar' });
     mainEl = h('div', { class: 'main' });
-    navEl = h('div', { class: 'nav' });
-    root.replaceChildren(h('div', { class: 'app' }, h('div', { class: 'top' }, chipsEl), mainEl, navEl));
+    navEl = h('nav', { class: 'nav' });
+    root.replaceChildren(h('div', { class: 'app' }, h('div', { class: 'top' }, barEl, chipsEl), mainEl, navEl));
     await reload();
     CK.subscribe(onChange);
     if (localStorage.getItem('ck-push') === '1') enablePush(false).catch(() => {}); // تجديد الاشتراك بصمت
@@ -223,16 +252,21 @@
   }
 
   function drawChrome() {
+    barEl.replaceChildren(h('span', { class: 'mark' }, '🛡️'),
+      h('div', { class: 'ttl grow' }, h('b', {}, tabName(S.tab)), h('span', {}, 'رقيب' + (S.family?.name ? ' · ' + S.family.name : ''))));
     chipsEl.replaceChildren(
       ...S.children.map((c) => h('button', { class: 'chip' + (c.id === S.cur ? ' on' : ''), onclick: () => setChild(c.id) },
         c.name, S.unread[c.id] ? ` (${S.unread[c.id]})` : '')),
-      h('button', { class: 'chip', onclick: addChild }, '＋ طفل'));
+      h('button', { class: 'chip add', onclick: addChild }, '＋ طفل'));
     const pending = S.d.subs.filter((s) => s.status === 'pending').length;
     const unreadCur = S.unread[S.cur] || 0;
-    navEl.replaceChildren(...TABS.map(([id, ic, name]) => h('button', { class: S.tab === id ? 'on' : '', onclick: () => { S.tab = id; render(); } },
-      h('span', { class: 'ic' }, ic), name,
-      id === 'home' && pending ? h('span', { class: 'badge' }, pending) : null,
-      id === 'chat' && unreadCur ? h('span', { class: 'badge' }, unreadCur) : null)));
+    const inMore = TABS.some((t) => !t[3] && t[0] === S.tab);
+    const navBtn = (cls, ic, name, onclick, badge) => h('button', { class: cls, type: 'button', 'aria-current': /\bon\b/.test(cls) ? 'page' : null, onclick },
+      h('span', { class: 'pill' }, CKTheme.icon(ic), badge ? h('span', { class: 'badge' }, badge) : null), h('b', {}, name));
+    navEl.replaceChildren(h('div', { class: 'brand' }, h('i', {}, '🛡️'), 'رقيب'),
+      ...TABS.map(([id, ic, name, primary]) => navBtn((primary ? '' : 'sec') + (S.tab === id ? ' on' : ''), ic, name, () => goTab(id),
+        id === 'home' ? pending : id === 'chat' ? unreadCur : 0)),
+      navBtn('more' + (inMore ? ' on' : ''), 'more', 'المزيد', moreSheet));
   }
 
   function render() {
@@ -280,8 +314,7 @@
     return h('div', { class: over ? 'card bad' : 'col', style: 'gap:6px' },
       over ? h('b', {}, `🔴 بلغ ${c.name} الحد اليومي (${hmin(cap)} ساعة)`) : null,
       h('div', { class: 'row between small' }, h('span', {}, 'الاستخدام اليوم'), h('b', {}, `${hmin(used)} من ${hmin(cap)}`)),
-      h('div', { style: 'height:8px;border-radius:4px;background:rgba(0,0,0,.1);overflow:hidden' },
-        h('div', { style: `height:100%;width:${pct}%;background:${over || pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#0f766e'}` })),
+      h('div', { class: 'bar' }, h('i', { class: over || pct >= 90 ? 'bad' : pct >= 70 ? 'warn' : '', style: `width:${pct}%` })),
       over ? h('div', { class: 'small' }, 'أُقفل جهازه حتى الغد. السماح المباشر منك يتجاوز هذا الحد.') : null);
   }
   function capAlert(c) {
@@ -609,7 +642,7 @@
     return [
       c ? card(`📚 خطة ${c.name}`, p
         ? [h('div', {}, h('b', {}, p.title), ' — ', p.done ? 'اكتملت مدتها 🎉' : `الشهر ${p.m} من ${p.months}`),
-          h('div', { style: 'height:8px;border-radius:4px;background:rgba(0,0,0,.1);overflow:hidden' }, h('div', { style: `height:100%;width:${p.pct}%;background:var(--pri)` })),
+          h('div', { class: 'bar' }, h('i', { style: `width:${p.pct}%` })),
           h('div', { class: 'small muted' }, 'بدأت ' + c.plan.started)]
         : h('p', { class: 'muted small' }, 'لم تُطبَّق خطة بعد. اختر قالبًا من المكتبة، أو دع النظام يختار خطة عشوائية.')) : null,
       h('div', { class: 'row wrap' },
@@ -778,7 +811,7 @@
         const code = await q(sb.rpc('new_pair_code', { p_child: c.id }));
         S.cur = c.id; localStorage.setItem('ck-cur', c.id);
         await reload();
-        setTimeout(() => showPairCode(c, code).then(() => { if (sample.checked) { S.tab = 'templates'; render(); } }));
+        setTimeout(() => showPairCode(c, code).then(() => { if (sample.checked) goTab('templates'); }));
       },
     });
   }
@@ -860,6 +893,7 @@
         h('button', { class: 'btn plain sm', onclick: () => { sessionStorage.removeItem('ck-unlocked'); location.reload(); } }, 'قفل التطبيق'),
         h('button', { class: 'btn plain sm', onclick: async () => { if (await confirmBox('تسجيل الخروج من هذا الجهاز؟')) { await disablePush(); await sb.auth.signOut(); sessionStorage.clear(); location.reload(); } } }, 'تسجيل الخروج')),
       pushOn() ? null : h('p', { class: 'small muted' }, 'فعّل الإشعارات ليصلك تنبيه بالمهام والرسائل حتى والتطبيق مغلق. على الآيفون: أضف التطبيق إلى الشاشة الرئيسية أولًا ثم افتحه من أيقونته.')));
+    out.push(CKTheme.picker());
     if (CK.whatsNew) out.push(CK.whatsNew('parent'));
     return out;
   }

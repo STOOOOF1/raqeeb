@@ -137,12 +137,22 @@
 
   // ================= الهيكل والبيانات =================
   let heroEl, mainEl, navEl;
-  const TABS = [['home', '🏠', 'الرئيسية'], ['tasks', '⭐', 'المهام'], ['yt', '▶️', 'يوتيوب'], ['chat', '💬', 'المحادثة'], ['settings', '⚙️', 'الإعدادات']];
+  const TABS = [['home', 'home', 'الرئيسية'], ['tasks', 'star', 'المهام'], ['yt', 'play', 'يوتيوب'], ['chat', 'chat', 'المحادثة'], ['settings', 'settings', 'الإعدادات']];
+  // الانتقال بين التبويبات: يبدأ من الأعلى مع حركة دخول خفيفة
+  function goTab(id) {
+    if (S.tab === id) { mainEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
+    S.tab = id;
+    mainEl.scrollTop = 0;
+    mainEl.classList.remove('enter'); void mainEl.offsetWidth; mainEl.classList.add('enter');
+    clearTimeout(goTab.t); goTab.t = setTimeout(() => mainEl.classList.remove('enter'), 500);
+    render();
+    mainEl.scrollTop = 0;
+  }
 
   async function start(offline) {
     heroEl = h('div', { class: 'top' });
     mainEl = h('div', { class: 'main' });
-    navEl = h('div', { class: 'nav' });
+    navEl = h('nav', { class: 'nav' });
     root.replaceChildren(h('div', { class: 'app' }, heroEl, mainEl, navEl));
     if (S.d.child) tick(true);
     if (!offline) await reload();
@@ -383,7 +393,7 @@
     if (heroEl.dataset.key !== key) {
       heroEl.dataset.key = key;
       const pz = btn === 'pause'
-        ? h('button', { class: 'btn ghost sm', style: 'background:#fff;margin-top:8px', onclick: () => {
+        ? h('button', { class: 'btn ghost sm', style: 'margin-top:8px', onclick: () => {
           pushOp({ type: 'pause', at: iso(now().getTime()) }); toast('⏸ توقف وقتك، والباقي محفوظ لك');
         } }, '⏸ إيقاف الوقت مؤقتًا')
         : btn === 'resume'
@@ -403,8 +413,8 @@
 
   function drawNav() {
     navEl.replaceChildren(...TABS.filter(([id]) => id !== 'yt' || S.d.yt.length).map(([id, ic, name]) =>
-      h('button', { class: S.tab === id ? 'on' : '', onclick: () => { S.tab = id; render(); } },
-        h('span', { class: 'ic' }, ic), name, id === 'chat' && S.unread ? h('span', { class: 'badge' }, S.unread) : null)));
+      h('button', { class: S.tab === id ? 'on' : '', type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => goTab(id) },
+        h('span', { class: 'pill' }, CKTheme.icon(ic), id === 'chat' && S.unread ? h('span', { class: 'badge' }, S.unread) : null), h('b', {}, name))));
   }
 
   function render() {
@@ -472,6 +482,7 @@
     if (UPD.state === 'idle' && N.has) setTimeout(checkUpdate, 0); // يبحث عن تحديث تلقائيًا عند فتح الإعدادات
     return [
       h('div', { class: 'card' }, h('h2', {}, '⚙️ الإعدادات'), updEl),
+      CKTheme.picker(),
       CK.whatsNew?.('kid'),
       h('div', { class: 'card' }, h('h2', {}, 'معلومات الجهاز'),
         h('div', { class: 'small muted' }, (info.model || '') + (info.android ? ' — أندرويد ' + info.android : '')),
