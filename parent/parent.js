@@ -5,7 +5,7 @@
   const root = $('#root');
   const S = {
     me: null, family: null, children: [], cur: localStorage.getItem('ck-cur'), tab: 'home', taskTab: 'main',
-    d: { members: [], schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], templates: [] },
+    d: { members: [], schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], templates: [] },
     unread: {}, chat: null, chatChild: null, appFilter: '',
   };
   const cur = () => S.children.find((c) => c.id === S.cur) || null;
@@ -157,12 +157,13 @@
       const fam = S.me.family_id;
       const since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
       const nowIso = new Date().toISOString();
-      const [family, children, members, schedules, yt, tasks, subs, grants, breaks, unread, templates, penalties] = await Promise.all([
+      const [family, children, members, schedules, yt, sites, tasks, subs, grants, breaks, unread, templates, penalties] = await Promise.all([
         q(sb.from('families').select('id,name').eq('id', fam).single()),
         q(sb.from('children').select('*').order('created_at')),
         q(sb.from('members').select('*').eq('role', 'parent').order('created_at')),
         q(sb.from('schedules').select('*').order('start_time')),
         q(sb.from('yt_channels').select('*').order('created_at')),
+        q(sb.from('sites').select('*').order('created_at')),
         q(sb.from('tasks').select('*').order('sort').order('created_at')),
         q(sb.from('submissions').select('*').or(`status.eq.pending,day.gte.${since}`).order('created_at', { ascending: false })),
         q(sb.from('grants').select('*').or(`status.eq.ready,ends_at.gte.${nowIso}`).order('created_at')),
@@ -175,7 +176,7 @@
       children.forEach(capAlert);
       if (!cur()) { S.cur = children[0]?.id || null; }
       const apps = S.cur ? await q(sb.from('apps').select('*').eq('child_id', S.cur).order('label')) : [];
-      S.d = { members, schedules, apps, yt, tasks, subs, grants, breaks, templates, penalties };
+      S.d = { members, schedules, apps, yt, sites, tasks, subs, grants, breaks, templates, penalties };
       S.unread = {};
       for (const m of unread) S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
       render();
@@ -510,6 +511,22 @@
     } }, 'إضافة');
     const chans = mine(S.d.yt, c);
 
+    // المواقع المسموحة: يفتحها الطفل من «تطبيقاتي» في متصفح مصغّر محصور بالموقع، دون متصفح الجهاز
+    const siteUrlIn = h('input', { type: 'url', placeholder: 'https://example.com/page', dir: 'ltr' });
+    const siteTitleIn = h('input', { type: 'text', placeholder: 'الاسم الظاهر للطفل (اختياري)' });
+    const siteWhole = h('input', { type: 'checkbox', checked: true, style: 'width:22px;height:22px;accent-color:var(--pri)' });
+    const siteBtn = h('button', { class: 'btn', onclick: async () => {
+      const url = CK.siteUrl(siteUrlIn.value);
+      if (!url) return toast('اكتب رابطًا صحيحًا يبدأ بـ https');
+      siteBtn.disabled = true;
+      await run(async () => {
+        await q(sb.from('sites').upsert({ family_id: c.family_id, child_id: c.id, url, title: siteTitleIn.value.trim() || CK.siteHost(url), whole_site: siteWhole.checked }, { onConflict: 'child_id,url' }));
+        siteUrlIn.value = ''; siteTitleIn.value = ''; siteWhole.checked = true; await reload();
+      }, 'أضيف الموقع');
+      siteBtn.disabled = false;
+    } }, 'إضافة');
+    const sites = mine(S.d.sites, c);
+
     // يطلب من جهاز الطفل إعادة قراءة تطبيقاته (لما ثُبّت بعد رقيب)؛ تصل القائمة الجديدة لحظيًا
     const refreshBtn = h('button', { class: 'btn', onclick: async () => {
       refreshBtn.disabled = true;
@@ -529,6 +546,17 @@
           y.thumb ? h('img', { src: y.thumb, width: 40, height: 40, style: 'border-radius:50%' }) : h('span', { class: 'avatar' }, '▶️'),
           h('span', { class: 'grow' }, y.title),
           h('button', { class: 'iconbtn', title: 'حذف', onclick: () => run(async () => { await q(sb.from('yt_channels').delete().eq('id', y.id)); await reload(); }) }, '🗑')))),
+      card('المواقع المسموحة',
+        h('p', { class: 'small muted' }, 'يفتحها الطفل من «تطبيقاتي» داخل رقيب في وقت اللعب فقط، دون شريط عناوين ولا تنزيلات، ولا يستطيع الانتقال إلى مواقع أخرى.'),
+        siteUrlIn, siteTitleIn,
+        h('label', { class: 'row', style: 'gap:8px' }, siteWhole, h('span', { class: 'grow small' }, 'السماح بكل صفحات الموقع (ألغِ التحديد لحصره في هذه الصفحة وما تحتها)')),
+        h('div', { class: 'row' }, h('div', { class: 'grow' }), siteBtn),
+        sites.map((s) => h('div', { class: 'item' },
+          h('span', { class: 'avatar' }, '🌐'),
+          h('div', { class: 'grow' }, h('div', {}, s.title || CK.siteHost(s.url)),
+            h('div', { class: 'small muted', dir: 'ltr', style: 'text-align:right;word-break:break-all' }, s.url),
+            h('div', { class: 'small muted' }, s.whole_site ? 'كل صفحات الموقع' : 'هذه الصفحة وما تحتها فقط')),
+          h('button', { class: 'iconbtn', title: 'حذف', onclick: () => run(async () => { await q(sb.from('sites').delete().eq('id', s.id)); await reload(); }) }, '🗑')))),
     ];
   }
 

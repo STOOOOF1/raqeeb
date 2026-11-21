@@ -504,10 +504,24 @@ const CK = (() => {
     return s.split(':').reduce((acc, p) => acc * 60 + +p, 0);
   }
   const fmtTime = (sec) => { sec = Math.max(0, Math.round(sec || 0)); const H = Math.floor(sec / 3600), M = Math.floor((sec % 3600) / 60), S = sec % 60; return H ? `${H}:${pad(M)}:${pad(S)}` : `${M}:${pad(S)}`; };
+  // يطبّع رابط موقع يضيفه الوالدان: https فقط، ويضيف البروتوكول إن نُسي. يعيد '' إن لم يصح
+  function siteUrl(input) {
+    let v = String(input || '').trim();
+    if (!v) return '';
+    if (!/^[a-z]+:\/\//i.test(v)) v = 'https://' + v;
+    try {
+      const u = new URL(v);
+      if (u.protocol === 'http:') u.protocol = 'https:';
+      if (u.protocol !== 'https:' || !u.hostname.includes('.')) return '';
+      u.hash = '';
+      return u.href;
+    } catch { return ''; }
+  }
+  const siteHost = (url) => { try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; } };
   const ytThumb = (id) => `https://i.ytimg.com/vi/${id}/hqdefault.jpg`;
 
   return {
-    ytId, ytStart, parseTime, fmtTime, ytThumb,
+    ytId, ytStart, parseTime, fmtTime, ytThumb, siteUrl, siteHost,
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
     parseUnits, splitUnits, nextPortion, words, computeState, usedToday, gate, me, fn, subscribe, debounce,
     startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, beep, shuffle,
