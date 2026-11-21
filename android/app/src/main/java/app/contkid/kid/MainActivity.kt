@@ -43,6 +43,7 @@ class MainActivity : Activity() {
 
     private lateinit var rootView: FrameLayout
     private lateinit var web: WebView
+    private lateinit var site: Site
     private var customView: View? = null
     private var customCallback: WebChromeClient.CustomViewCallback? = null
     private var pendingAudio: PermissionRequest? = null
@@ -65,6 +66,7 @@ class MainActivity : Activity() {
         web = WebView(this)
         rootView.addView(web, ViewGroup.LayoutParams(-1, -1))
         setContentView(rootView)
+        site = Site(this, rootView)
         web.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -105,6 +107,7 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         if (instance === this) instance = null
         runCatching { unregisterReceiver(pkgReceiver) }
+        site.close()
         web.destroy()
         super.onDestroy()
     }
@@ -115,6 +118,7 @@ class MainActivity : Activity() {
     @Deprecated("زر الرجوع يُمرَّر إلى الواجهة")
     override fun onBackPressed() {
         if (customView != null) web.webChromeClient?.onHideCustomView()
+        else if (site.isOpen) site.back()
         else web.evaluateJavascript("window.onNativeBack && window.onNativeBack()", null)
     }
 
@@ -190,12 +194,24 @@ class MainActivity : Activity() {
             }
         }
 
+        /** يفتح موقعًا أضافه الوالدان في متصفح مصغّر محصور بذلك الموقع (whole=false: الصفحة وما تحتها فقط) */
+        @JavascriptInterface
+        fun openSite(url: String, title: String, whole: Boolean) = runOnUiThread {
+            val a = this@MainActivity
+            if (Policy.kiosk(a) && !Policy.isOpen(a)) Toast.makeText(a, "الموقع غير متاح الآن", Toast.LENGTH_SHORT).show()
+            else site.open(url, title, whole)
+        }
+
+        @JavascriptInterface
+        fun closeSite() = runOnUiThread { site.close() }
+
         @JavascriptInterface
         fun setPolicy(json: String) {
             val a = this@MainActivity
             runCatching { Policy.save(a, json) }
             runOnUiThread {
                 Policy.apply(a)
+                if (!Policy.isOpen(a)) site.close() // انتهى الوقت أو حلّ الفاصل
                 if (Policy.kiosk(a) && !Policy.isOpen(a) && !a.hasWindowFocus()) Policy.bringToFront(a)
             }
         }

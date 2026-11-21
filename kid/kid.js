@@ -14,6 +14,8 @@
       try { if (fresh && B && B.refreshApps) B.refreshApps(); return B ? JSON.parse(B.getApps()) : DEMO_APPS; } catch { return []; }
     },
     launch: (pkg) => (B ? B.launchApp(pkg) : toast('معاينة: سيفتح التطبيق على جهاز الطفل')),
+    // موقع أضافه الوالدان: متصفح مصغّر محصور بالموقع في تطبيق أندرويد، وإلا (معاينة/إصدار قديم) داخل نافذة
+    site: (s) => (B && B.openSite ? B.openSite(s.url, s.title || '', !!s.whole_site) : openSiteFrame(s)),
     policy: (p) => { if (B) B.setPolicy(JSON.stringify(p)); },
     wifi: () => openWifi(),
     toast: (t) => B && B.toast(t),
@@ -33,8 +35,8 @@
   const S = {
     me: null, tab: 'home', offset: 0, st: null, sig: '', chat: null, unread: 0, breakOpen: false, overlay: null,
     // raw: آخر بيانات من الخادم — d: نفسها بعد تطبيق العمليات التي لم تُزامن بعد
-    raw: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
-    d: { child: null, schedules: [], apps: [], yt: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
+    raw: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
+    d: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
     ops: load('ck-ops', []),
     // عدّاد وقت الشاشة: used = اليوم، since = المتواصل منذ آخر راحة، rest = مدة الإطفاء المتصل
     U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, off: null, warned: '' },
@@ -170,12 +172,13 @@
       await flush();
       const fetchedAt = Date.now();
       const cid = S.me.child_id, since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
-      const [srv, child, schedules, apps, yt, tasks, subs, grants, breaks, unread, penalties] = await Promise.all([
+      const [srv, child, schedules, apps, yt, sites, tasks, subs, grants, breaks, unread, penalties] = await Promise.all([
         q(sb.rpc('server_now')),
         q(sb.from('children').select('*').eq('id', cid).maybeSingle()),
         q(sb.from('schedules').select('*')),
         q(sb.from('apps').select('*').eq('allowed', true).order('label')),
         q(sb.from('yt_channels').select('*').order('created_at')),
+        q(sb.from('sites').select('*').order('created_at')).catch(() => []),
         q(sb.from('tasks').select('*').eq('active', true).order('sort').order('created_at')),
         q(sb.from('submissions').select('*').or(`status.eq.pending,day.gte.${since}`).order('created_at', { ascending: false })),
         q(sb.from('grants').select('*').or(`status.eq.ready,ends_at.gte.${new Date().toISOString()}`).order('created_at')),
@@ -188,7 +191,7 @@
       }
       S.offset = new Date(srv).getTime() - Date.now();
       if (Math.abs(S.offset) < 5000) S.offset = 0;
-      S.raw = { child, schedules, apps, yt, tasks, subs, grants, breaks, penalties };
+      S.raw = { child, schedules, apps, yt, sites, tasks, subs, grants, breaks, penalties };
       checkUsageReset(child);
       // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
       S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
@@ -548,10 +551,11 @@
     if (!st.mainsOk) out.push(mainTasksCard());
     out.push(readyCard(), penaltiesCard());
     if (st.unlocked) {
-      const apps = S.d.apps;
+      const apps = S.d.apps, sites = S.d.sites || [];
       out.push(h('div', { class: 'card' }, h('h2', {}, 'تطبيقاتي'),
-        apps.length || S.d.yt.length ? h('div', { class: 'appgrid' },
+        apps.length || S.d.yt.length || sites.length ? h('div', { class: 'appgrid' },
           S.d.yt.length ? h('button', { class: 'appicon', onclick: () => { S.tab = 'yt'; render(); } }, h('div', { class: 'ph' }, '▶️'), h('span', {}, 'يوتيوب')) : null,
+          sites.map((s) => h('button', { class: 'appicon', onclick: () => N.site(s) }, siteIcon(s), h('span', {}, s.title || CK.siteHost(s.url)))),
           apps.map((a) => h('button', { class: 'appicon', onclick: () => N.launch(a.package) },
             a.icon ? h('img', { src: a.icon, alt: '' }) : h('div', { class: 'ph' }, '🎮'), h('span', {}, a.label || a.package))))
           : h('p', { class: 'muted' }, 'لم يحدد والداك تطبيقات بعد.')));
@@ -944,6 +948,22 @@
     const body = openOverlay('▶️ ' + title);
     S.overlay.dataset.needsUnlock = '1';
     body.append(h('div', { class: 'player' }, h('iframe', { src, allow: 'autoplay; encrypted-media; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin' })));
+  }
+
+  // ================= المواقع =================
+  function siteIcon(s) {
+    const ph = h('div', { class: 'ph' }, '🌐');
+    let o; try { o = new URL(s.url).origin; } catch { return ph; }
+    const img = h('img', { src: o + '/favicon.ico', alt: '', loading: 'lazy', style: 'padding:12px;object-fit:contain', onerror: () => img.replaceWith(ph) });
+    return img;
+  }
+  // للمعاينة في المتصفح أو إصدار أندرويد لا يعرف openSite؛ بعض المواقع ترفض العرض داخل إطار
+  function openSiteFrame(s) {
+    const body = openOverlay('🌐 ' + (s.title || CK.siteHost(s.url)));
+    S.overlay.dataset.needsUnlock = '1';
+    body.append(h('iframe', { src: s.url, style: 'width:100%;height:calc(100vh - 90px);border:0;border-radius:14px;background:#fff',
+      sandbox: 'allow-scripts allow-same-origin allow-forms', referrerpolicy: 'strict-origin-when-cross-origin' }),
+    h('p', { class: 'small muted' }, 'إن ظهرت الصفحة فارغة فحدّث تطبيق رقيب من الإعدادات ليفتح الموقع كاملًا.'));
   }
 
   // ================= المحادثة =================
