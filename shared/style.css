@@ -237,6 +237,12 @@ dialog .df { padding: 12px 20px; display: flex; gap: 10px; justify-content: flex
 
 /* ================= المحادثة ================= */
 .chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.chat-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.chat-wrap .chat-slot { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.chat-tabs { margin: 10px 12px 0; flex: none; }
+.chat-tabs .badge.in { position: static; display: inline-grid; margin-inline-start: 6px; vertical-align: middle; }
+.bubble .who { font-size: .74rem; font-weight: 700; color: var(--pri); margin-bottom: 2px; }
+.bubble .who.par { color: var(--ink); }
 .chat .msgs { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; }
 .bubble { max-width: 80%; padding: 8px 14px; border-radius: 18px 18px 18px 6px; background: var(--card); box-shadow: var(--shadow); align-self: flex-end; word-break: break-word; white-space: pre-wrap; animation: rise .2s var(--ease); }
 .bubble.me { background: var(--me); align-self: flex-start; border-radius: 18px 18px 6px 18px; }
