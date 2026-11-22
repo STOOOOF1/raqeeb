@@ -35,8 +35,8 @@
   const S = {
     me: null, tab: 'home', offset: 0, st: null, sig: '', chats: {}, chatRoom: 'direct', chatWrap: null, unread: 0, famUnread: 0, breakOpen: false, overlay: null,
     // raw: آخر بيانات من الخادم — d: نفسها بعد تطبيق العمليات التي لم تُزامن بعد
-    raw: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
-    d: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [] },
+    raw: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [], trips: [], tripAnswers: [] },
+    d: { child: null, schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], penalties: [], trips: [], tripAnswers: [] },
     ops: load('ck-ops', []),
     // عدّاد وقت الشاشة: used = اليوم، since = المتواصل منذ آخر راحة، rest = مدة الإطفاء المتصل
     U: load('ck-usage', null) || { day: '', used: 0, since: 0, rest: 0, t: 0, off: null, warned: '' },
@@ -140,7 +140,7 @@
 
   // ================= الهيكل والبيانات =================
   let heroEl, mainEl, navEl;
-  const TABS = [['home', 'home', 'الرئيسية'], ['tasks', 'star', 'المهام'], ['yt', 'play', 'يوتيوب'], ['chat', 'chat', 'المحادثة'], ['settings', 'settings', 'الإعدادات']];
+  const TABS = [['home', 'home', 'الرئيسية'], ['tasks', 'star', 'المهام'], ['yt', 'play', 'يوتيوب'], ['trips', 'compass', 'رحلاتنا'], ['chat', 'chat', 'المحادثة'], ['settings', 'settings', 'الإعدادات']];
   // الانتقال بين التبويبات: يبدأ من الأعلى مع حركة دخول خفيفة
   function goTab(id) {
     if (S.tab === id) { mainEl.scrollTo({ top: 0, behavior: 'smooth' }); return; }
@@ -173,7 +173,7 @@
       await flush();
       const fetchedAt = Date.now();
       const cid = S.me.child_id, since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
-      const [srv, child, schedules, apps, yt, sites, tasks, subs, grants, breaks, unread, penalties] = await Promise.all([
+      const [srv, child, schedules, apps, yt, sites, tasks, subs, grants, breaks, unread, penalties, trips, tripAnswers] = await Promise.all([
         q(sb.rpc('server_now')),
         q(sb.from('children').select('*').eq('id', cid).maybeSingle()),
         q(sb.from('schedules').select('*')),
@@ -186,13 +186,15 @@
         q(sb.from('break_items').select('*').eq('active', true)),
         q(sb.from('messages').select('id', { count: 'exact', head: false }).eq('room', 'direct').eq('sender', 'parent').is('read_at', null)),
         q(sb.from('penalties').select('*').gte('day', since).order('created_at', { ascending: false })),
+        q(sb.from('trips').select('*').order('sort').order('created_at', { ascending: false })).catch(() => []),
+        q(sb.from('trip_answers').select('*')).catch(() => []),
       ]);
       if (!child) { // فُصل هذا الجهاز (رُبط جهاز آخر أو حُذف الطفل)
         await sb.auth.signOut(); localStorage.removeItem('ck-kid-cache'); return location.reload();
       }
       S.offset = new Date(srv).getTime() - Date.now();
       if (Math.abs(S.offset) < 5000) S.offset = 0;
-      S.raw = { child, schedules, apps, yt, sites, tasks, subs, grants, breaks, penalties };
+      S.raw = { child, schedules, apps, yt, sites, tasks, subs, grants, breaks, penalties, trips, tripAnswers };
       checkUsageReset(child);
       // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
       S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
@@ -224,6 +226,8 @@
   const reloadSoon = CK.debounce(reload, 300);
 
   function onChange(p) {
+    if (TRIPS.onChange(p)) return; // الألعاب العائلية: تحدّث شاشتها فقط
+    if (p.table === 'trips' && p.eventType === 'INSERT' && S.d.child?.trips_enabled) { CK.beep(); N.toast('🧭 رحلة جديدة من والديك'); toast('🧭 رحلة جديدة من والديك: ' + (p.new?.title || '')); }
     if (p.table === 'messages') {
       if (p.eventType === 'DELETE') { if (p.old?.id) Object.values(S.chats).forEach((c) => c.remove(p.old.id)); return; } // الحذف اليومي للمحادثات
       const m = p.new;
@@ -427,7 +431,7 @@
   }
 
   function drawNav() {
-    navEl.replaceChildren(...TABS.filter(([id]) => id !== 'yt' || S.d.yt.length).map(([id, ic, name]) =>
+    navEl.replaceChildren(...TABS.filter(([id]) => (id !== 'yt' || S.d.yt.length) && (id !== 'trips' || S.d.child?.trips_enabled)).map(([id, ic, name]) =>
       h('button', { class: S.tab === id ? 'on' : '', type: 'button', 'aria-current': S.tab === id ? 'page' : null, onclick: () => goTab(id) },
         h('span', { class: 'pill' }, CKTheme.icon(ic), id === 'chat' && (S.unread + S.famUnread) ? h('span', { class: 'badge' }, S.unread + S.famUnread) : null), h('b', {}, name))));
   }
@@ -437,7 +441,8 @@
     if (S.tab === 'chat') return viewChat();
     mainEl.style.padding = '';
     const top = mainEl.scrollTop;
-    mainEl.replaceChildren(...{ home: viewHome, tasks: viewTasks, yt: viewYt, settings: viewSettings }[S.tab]().filter(Boolean),
+    if (S.tab === 'trips' && !S.d.child?.trips_enabled) S.tab = 'home';
+    mainEl.replaceChildren(...{ home: viewHome, tasks: viewTasks, yt: viewYt, trips: viewTrips, settings: viewSettings }[S.tab]().filter(Boolean),
       h('p', { class: 'small muted center', style: 'margin:18px 0 6px' }, 'رقيب — الإصدار ' + appVersion()));
     mainEl.scrollTop = top;
   }
@@ -976,6 +981,27 @@
     body.append(h('iframe', { src: s.url, style: 'width:100%;height:calc(100vh - 90px);border:0;border-radius:14px;background:#fff',
       sandbox: 'allow-scripts allow-same-origin allow-forms', referrerpolicy: 'strict-origin-when-cross-origin' }),
     h('p', { class: 'small muted' }, 'إن ظهرت الصفحة فارغة فحدّث تطبيق رقيب من الإعدادات ليفتح الموقع كاملًا.'));
+  }
+
+  // ================= رحلاتنا =================
+  // نماذج يعدّها والداه يجيب عنها، وألعاب عائلية يلعبها مع أسرته (shared/trips.js). للمتعة فقط: لا تمنح وقتًا
+  const tripsCtx = () => ({ role: 'kid', me: S.me, overlay: (t) => openOverlay(t), close: closeOverlay, answers: () => S.d.tripAnswers, saved: reloadSoon });
+  function viewTrips() {
+    const trips = S.d.trips || [];
+    return [
+      h('div', { class: 'card soft' }, h('h2', { style: 'margin:0' }, '🧭 رحلاتنا'), h('p', { class: 'small', style: 'margin:0' }, 'رحلات أعدّها لك والداك: أسئلة ومقاطع وألعاب تلعبها مع أسرتك.')),
+      ...trips.map((t) => {
+        const p = TRIPS.progress(t, S.d.tripAnswers, S.me.child_id);
+        const games = (t.items || []).filter((it) => it.kind === 'game').length;
+        return h('button', { class: 'card', style: 'text-align:start;cursor:pointer;border:0;font:inherit;color:inherit', onclick: () => TRIPS.openTrip(tripsCtx(), t) },
+          h('div', { class: 'row' }, h('span', { class: 'avatar' }, p.total && p.done >= p.total ? '🏁' : '🧭'),
+            h('div', { class: 'grow' }, h('b', {}, t.title), h('div', { class: 'small muted' },
+              (p.total ? `أنجزت ${p.done} من ${p.total}` : '') + (games ? (p.total ? ' · ' : '') + `🎲 ${games === 1 ? 'لعبة' : games + ' ألعاب'}` : ''))),
+            h('span', { class: 'tag pri' }, p.total && p.done >= p.total ? 'مكتملة ✓' : p.done ? 'أكمل' : 'ابدأ')),
+          p.total ? h('div', { class: 'bar' }, h('i', { style: `width:${Math.round((p.done / p.total) * 100)}%` })) : null);
+      }),
+      trips.length ? null : h('div', { class: 'card center' }, h('p', { class: 'muted' }, 'لا توجد رحلات بعد. سيضيفها والداك قريبًا 🌟')),
+    ];
   }
 
   // ================= المحادثة =================

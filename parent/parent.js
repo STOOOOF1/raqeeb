@@ -5,7 +5,7 @@
   const root = $('#root');
   const S = {
     me: null, family: null, children: [], cur: localStorage.getItem('ck-cur'), tab: 'home', taskTab: 'main',
-    d: { members: [], schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], templates: [] },
+    d: { members: [], schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], templates: [], trips: [], tripAnswers: [] },
     unread: {}, chat: null, chatChild: null, famChat: null, famUnread: 0, chatWrap: null,
     chatRoom: localStorage.getItem('ck-chat-room') === 'family' ? 'family' : 'direct', appFilter: '',
   };
@@ -110,7 +110,7 @@
   // ================= الهيكل والبيانات =================
   let chipsEl, mainEl, navEl, barEl;
   // [المعرّف، الأيقونة، الاسم، رئيسي في الشريط السفلي؟، وصف في ورقة «المزيد»]
-  const TABS = [['home', 'home', 'الرئيسية', 1], ['tasks', 'tasks', 'المهام', 1], ['schedule', 'clock', 'الأوقات', 1], ['chat', 'chat', 'المحادثة', 1],
+  const TABS = [['home', 'home', 'الرئيسية', 1], ['tasks', 'tasks', 'المهام', 1], ['schedule', 'clock', 'الأوقات', 1], ['chat', 'chat', 'المحادثة', 1], ['trips', 'compass', 'رحلاتنا', 1],
     ['apps', 'apps', 'التطبيقات', 0, 'السماح بتطبيقات الجهاز وقنوات يوتيوب'], ['breaks', 'bulb', 'الفوائد', 0, 'فواصل راحة العين والأسئلة والقصص'],
     ['templates', 'book', 'القوالب', 0, 'خطط جاهزة تطبّقها على طفلك'], ['settings', 'settings', 'الإعدادات', 0, 'الطفل والأسرة والمظهر والإشعارات']];
   const tabName = (id) => (TABS.find((t) => t[0] === id) || [])[2] || '';
@@ -158,7 +158,7 @@
       const fam = S.me.family_id;
       const since = CK.dayStr(new Date(Date.now() - 2 * 864e5));
       const nowIso = new Date().toISOString();
-      const [family, children, members, schedules, yt, sites, tasks, subs, grants, breaks, unread, templates, penalties] = await Promise.all([
+      const [family, children, members, schedules, yt, sites, tasks, subs, grants, breaks, unread, templates, penalties, trips, tripAnswers] = await Promise.all([
         q(sb.from('families').select('id,name').eq('id', fam).single()),
         q(sb.from('children').select('*').order('created_at')),
         q(sb.from('members').select('*').eq('role', 'parent').order('created_at')),
@@ -172,12 +172,14 @@
         q(sb.from('messages').select('child_id').eq('room', 'direct').eq('sender', 'child').is('read_at', null)),
         q(sb.from('templates').select('*').order('sort').order('created_at')),
         q(sb.from('penalties').select('*').gte('day', since).order('created_at', { ascending: false })),
+        q(sb.from('trips').select('*').order('sort').order('created_at', { ascending: false })).catch(() => []),
+        q(sb.from('trip_answers').select('*').order('updated_at', { ascending: false })).catch(() => []),
       ]);
       S.family = family; S.children = children;
       children.forEach(capAlert);
       if (!cur()) { S.cur = children[0]?.id || null; }
       const apps = S.cur ? await q(sb.from('apps').select('*').eq('child_id', S.cur).order('label')) : [];
-      S.d = { members, schedules, apps, yt, sites, tasks, subs, grants, breaks, templates, penalties };
+      S.d = { members, schedules, apps, yt, sites, tasks, subs, grants, breaks, templates, penalties, trips, tripAnswers };
       S.unread = {};
       for (const m of unread) S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
       if (!(S.tab === 'chat' && S.chatRoom === 'family')) S.famUnread = await CK.famUnread(fam).catch(() => 0);
@@ -228,6 +230,11 @@
   const pushOn = () => pushSupported() && Notification.permission === 'granted' && localStorage.getItem('ck-push') === '1';
 
   function onChange(p) {
+    if (TRIPS.onChange(p)) return; // الألعاب العائلية: تحدّث شاشتها فقط
+    if (p.table === 'trip_answers' && p.new && (p.eventType === 'INSERT' || (p.eventType === 'UPDATE' && p.new.updated_at !== p.old?.updated_at)) && p.new.kind !== 'video') {
+      const c = S.children.find((x) => x.id === p.new.child_id);
+      notify('🧭 ' + (c?.name || 'الطفل') + ' أجاب في رحلاتنا', (S.d.trips.find((t) => t.id === p.new.trip_id) || {}).title || '');
+    }
     if (p.table === 'messages') {
       if (p.eventType === 'DELETE') { if (p.old?.id) { S.chat?.remove(p.old.id); S.famChat?.remove(p.old.id); } return; } // الحذف اليومي للمحادثات
       const m = p.new;
@@ -277,7 +284,7 @@
       h('span', { class: 'pill' }, CKTheme.icon(ic), badge ? h('span', { class: 'badge' }, badge) : null), h('b', {}, name));
     navEl.replaceChildren(h('div', { class: 'brand' }, h('i', {}, '🛡️'), 'رقيب'),
       ...TABS.map(([id, ic, name, primary]) => navBtn((primary ? '' : 'sec') + (S.tab === id ? ' on' : ''), ic, name, () => goTab(id),
-        id === 'home' ? pending : id === 'chat' ? unreadCur + S.famUnread : 0)),
+        id === 'home' ? pending : id === 'chat' ? unreadCur + S.famUnread : id === 'trips' ? tripsUnseen() : 0)),
       navBtn('more' + (inMore ? ' on' : ''), 'more', 'المزيد', moreSheet));
   }
 
@@ -294,7 +301,7 @@
         h('button', { class: 'btn big', onclick: addChild }, '＋ إضافة طفل')));
       return;
     }
-    const view = { home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, breaks: viewBreaks, templates: viewTemplates, settings: viewSettings }[S.tab];
+    const view = { trips: viewTrips, home: viewHome, schedule: viewSchedule, apps: viewApps, tasks: viewTasks, breaks: viewBreaks, templates: viewTemplates, settings: viewSettings }[S.tab];
     mainEl.replaceChildren(...view(c).filter(Boolean));
     mainEl.scrollTop = top;
   }
@@ -758,6 +765,64 @@
         }) : h('p', { class: 'muted small' }, 'لا توجد مهام بعد.')));
     }
     return out;
+  }
+
+  // ================= رحلاتنا =================
+  // نماذج تفاعلية يعدّها الوالد ويجيب عنها الطفل، وألعاب عائلية يلعبها الجميع (shared/trips.js)
+  const tripsUnseen = () => S.d.tripAnswers.filter((a) => !a.seen_at && a.kind !== 'video').length;
+  const tripsCtx = () => ({ role: 'parent', me: S.me, overlay: TRIPS.overlay, close: TRIPS.close });
+  const saveTrip = (t) => async (row) => {
+    if (t) await q(sb.from('trips').update({ ...row, updated_at: new Date().toISOString() }).eq('id', t.id));
+    else await q(sb.from('trips').insert({ ...row, family_id: S.me.family_id }));
+    await reload(); toast('حُفظت الرحلة ✅');
+  };
+  async function delTrip(t) {
+    if (!(await confirmBox(`حذف رحلة «${t.title}» وكل إجاباتها نهائيًا؟`, 'حذف'))) return;
+    run(async () => {
+      const paths = [...(t.items || []).map((it) => it.audio), ...S.d.tripAnswers.filter((a) => a.trip_id === t.id).map((a) => a.audio_path)].filter(Boolean);
+      await q(sb.from('trips').delete().eq('id', t.id));
+      if (paths.length) sb.storage.from('audio').remove(paths);
+      await reload();
+    }, 'حُذفت الرحلة');
+  }
+  function viewTrips(c) {
+    const save = (patch, msg) => run(async () => { await q(sb.from('children').update(patch).eq('id', c.id)); await reload(); }, msg);
+    const list = S.d.trips.filter((t) => !t.child_id || t.child_id === c.id);
+    const others = S.d.trips.filter((t) => t.child_id && t.child_id !== c.id);
+    const kidName = (id) => S.children.find((k) => k.id === id)?.name || '';
+    const tripCard = (t) => {
+      const p = TRIPS.progress(t, S.d.tripAnswers, c.id);
+      const unseen = S.d.tripAnswers.filter((a) => a.trip_id === t.id && a.child_id === c.id && !a.seen_at && a.kind !== 'video').length;
+      return h('div', { class: 'card' + (t.active ? '' : ' soft') },
+        h('div', { class: 'row' }, h('span', { class: 'avatar' }, '🧭'),
+          h('div', { class: 'grow' }, h('b', {}, t.title), h('div', { class: 'small muted' }, (t.child_id ? 'لـ' + kidName(t.child_id) : 'لكل الأبناء') + (t.active ? '' : ' · متوقفة'))),
+          h('input', { type: 'checkbox', checked: t.active, title: 'مفعّلة', style: 'width:22px;height:22px;accent-color:var(--pri)',
+            onchange: (e) => run(async () => { await q(sb.from('trips').update({ active: e.target.checked }).eq('id', t.id)); await reload(); }) })),
+        h('div', { class: 'small muted' }, TRIPS.summary(t)),
+        p.total ? h('div', { class: 'row small' }, h('span', { class: 'grow' }, `أجاب ${c.name} عن ${p.done} من ${p.total}`), unseen ? h('span', { class: 'tag pri' }, `${unseen} جديدة`) : null) : null,
+        p.total ? h('div', { class: 'bar' }, h('i', { style: `width:${Math.round((p.done / p.total) * 100)}%` })) : null,
+        h('div', { class: 'row wrap' },
+          p.total ? h('button', { class: 'btn sm', onclick: () => TRIPS.answersDialog(t, c, S.d.tripAnswers, reloadSoon) }, '📋 الإجابات') : null,
+          h('button', { class: 'btn ghost sm', onclick: () => TRIPS.editor(t, { children: S.children, curId: c.id, familyId: S.me.family_id, onSave: saveTrip(t) }) }, '✏️ تعديل'),
+          h('button', { class: 'btn ghost sm', onclick: () => (() => { const mem = []; TRIPS.openTrip({ ...tripsCtx(), preview: true, answers: () => mem }, t); })() }, '👁 معاينة'),
+          h('button', { class: 'btn plain sm', onclick: () => delTrip(t) }, '🗑')));
+    };
+    return [
+      h('div', { class: 'card' },
+        h('label', { class: 'switch' }, h('div', {}, `تبويب «رحلاتنا» على جهاز ${c.name}`,
+          h('div', { class: 'small muted' }, c.trips_enabled ? 'ظاهر له: يجيب عن النماذج ويدخل الألعاب التي تضعها في رحلاته.' : 'مخفي عنه الآن. فعّله ليرى رحلاته.')),
+        h('input', { type: 'checkbox', checked: c.trips_enabled, onchange: (e) => save({ trips_enabled: e.target.checked }, e.target.checked ? `ظهرت «رحلاتنا» لـ${c.name}` : `أُخفيت «رحلاتنا» عن ${c.name}`) })),
+        h('button', { class: 'btn', onclick: () => TRIPS.editor(null, { children: S.children, curId: c.id, familyId: S.me.family_id, onSave: saveTrip(null) }) }, '＋ رحلة جديدة')),
+      h('div', { class: 'card soft' }, h('p', { class: 'small', style: 'margin:0' }, 'الرحلة مجموعة عناصر تختارها: سؤال اختياري يُصحَّح تلقائيًا، أو سؤال مفتوح يجيب عنه بالكتابة أو بصوته (ويمكنك تسجيل السؤال بصوتك)، أو فيديو يشاهده داخل التطبيق، أو لعبة عائلية. للمتعة والتعلّم، ولا تمنح وقتًا.')),
+      ...list.map(tripCard),
+      list.length ? null : h('p', { class: 'muted center small' }, `لا توجد رحلات لـ${c.name} بعد.`),
+      others.length ? h('details', { class: 'card' }, h('summary', {}, `رحلات إخوته (${others.length})`), ...others.map((t) => h('div', { class: 'item' },
+        h('span', { class: 'grow' }, t.title, h('span', { class: 'small muted' }, ' · ' + kidName(t.child_id))),
+        h('button', { class: 'iconbtn', onclick: () => TRIPS.editor(t, { children: S.children, curId: c.id, familyId: S.me.family_id, onSave: saveTrip(t) }) }, '✏️')))) : null,
+      h('div', { class: 'card' }, h('h2', {}, '🎲 الألعاب العائلية'),
+        h('p', { class: 'small muted', style: 'margin:0' }, 'العب مع أبنائك من هنا. يدخلها الطفل من رحلة فيها اللعبة، وتستطيع رفض الإجابات الخاطئة عند ظهور النتائج.'),
+        Object.entries(TRIPS.GAMES).map(([k, g]) => h('button', { class: 'btn ghost', onclick: () => TRIPS.hub(tripsCtx(), k) }, `${g.ic} ${g.name}`))),
+    ];
   }
 
   // ================= المحادثة =================
