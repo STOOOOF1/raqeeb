@@ -166,7 +166,12 @@ const CK = (() => {
     const capLeft = () => (c.max_daily_min ? c.max_daily_min * 60000 - usedToday(d, now) : Infinity);
     if (c.force_lock) return { ...base, reason: 'force' };
     // فترات الأرصدة النشطة: إذن الوالدين دائمًا، والمكتسب بشرط إنجاز المهام الرئيسية
-    const spans = (from) => d.grants.filter((g) => g.status === 'active' && g.ends_at && (g.source === 'parent' || mainsOk))
+    const pa = c.paused_at ? new Date(c.paused_at).getTime() : null;
+    // إذن والدين أُعطي بعد الإيقاف: لا يُجمَّد مع الوقت الموقوف
+    const parentAfterPause = (g) => pa != null && g.source === 'parent' && new Date(g.starts_at).getTime() >= pa;
+    let onlyParent = false;
+    const spans = (from) => d.grants.filter((g) => g.status === 'active' && g.ends_at && (g.source === 'parent' || mainsOk)
+      && (!onlyParent || parentAfterPause(g)))
       .map((g) => ({ s: new Date(g.starts_at).getTime(), e: new Date(g.ends_at).getTime(), g })).filter((i) => i.e > from);
     // نهاية الوقت المتصل الذي يبدأ قبل اللحظة t (تُدمج الأرصدة المتتابعة)
     const chainEnd = (iv, t) => {
@@ -180,11 +185,16 @@ const CK = (() => {
       return until;
     };
     // الطفل أوقف وقته (أو توقف تلقائيًا بنهاية الوقت المسموح): الجهاز مقفل والباقي محفوظ كما كان لحظة الإيقاف
-    if (c.paused_at) {
-      const pa = new Date(c.paused_at).getTime();
-      const end = chainEnd(spans(pa), pa);
-      const left = end ? Math.max(0, Math.min(end - pa, capLeft())) : 0;
-      return { ...base, reason: 'pause', left, canResume: inWindow && left > 0 };
+    // إلا إذا أعطاه الوالدان إذنًا جاريًا بعد الإيقاف: يُفتح بالإذن وحده، ويبقى الوقت الموقوف محفوظًا كما هو
+    if (pa != null) {
+      const parentNow = d.grants.some((g) => g.status === 'active' && g.ends_at && parentAfterPause(g)
+        && new Date(g.starts_at).getTime() <= t0 && new Date(g.ends_at).getTime() > t0);
+      if (!parentNow) {
+        const end = chainEnd(spans(pa), pa);
+        const left = end ? Math.max(0, Math.min(end - pa, capLeft())) : 0;
+        return { ...base, reason: 'pause', left, canResume: inWindow && left > 0 };
+      }
+      onlyParent = true;
     }
 
     const iv = spans(t0);

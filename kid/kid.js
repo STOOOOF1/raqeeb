@@ -62,6 +62,7 @@
         const pa = new Date(d.child.paused_at).getTime(), delta = Math.max(0, new Date(op.at).getTime() - pa);
         for (const g of d.grants) {
           if (g.status !== 'active' || !g.ends_at || new Date(g.ends_at).getTime() <= pa) continue;
+          if (g.source === 'parent' && new Date(g.starts_at).getTime() >= pa) continue; // إذن بعد الإيقاف لا يُرحَّل
           g.ends_at = iso(new Date(g.ends_at).getTime() + delta);
           if (new Date(g.starts_at).getTime() > pa) g.starts_at = iso(new Date(g.starts_at).getTime() + delta);
         }
@@ -299,7 +300,7 @@
       } else if (gap < 5000 && !document.hidden) on = gap; // معاينة المتصفح
       else off = gap;
     }
-    if (S.resting || S.d.child.paused_at) on = 0; // التوقف المؤقت لا يُحسب من الاستخدام
+    if (S.resting || (S.d.child.paused_at && !(S.st && S.st.unlocked))) on = 0; // التوقف المؤقت لا يُحسب من الاستخدام
     U.used += on; U.since += on;
     if (off >= restMs) U.since = 0; // إطفاء بطول الفاصل يكفي راحةً للعينين
     else if (off > 0 && on < 1500) { U.rest += off; if (U.rest >= restMs) U.since = 0; }
@@ -378,7 +379,7 @@
       line = st.capped && st.until - t.getTime() < 3600000 ? 'آخر وقتك اليومي ⏳'
         : { parent: 'سمح لك والداك 🎁', task: 'وقت كسبته بإنجازك 💪', main: 'ساعتك اليومية ⭐' }[st.why];
       big = CK.countdown(st.until - t.getTime());
-      if (!S.breakOpen) btn = 'pause';
+      if (!S.breakOpen && !c.paused_at) btn = 'pause'; // أثناء إذن الوالدين فوق وقت موقوف: لا يُوقف الإذن
     } else if (st.reason === 'pause') {
       line = st.canResume ? 'وقتك متوقف ⏸ — الباقي محفوظ لك'
         : st.nextWindow ? `وقتك محفوظ ⏸ — تستأنفه الساعة ${clock(st.nextWindow.s)}` : 'وقتك محفوظ ⏸ — تستأنفه في الوقت المسموح';
