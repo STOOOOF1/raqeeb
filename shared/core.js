@@ -334,7 +334,11 @@ const CK = (() => {
   const MIC_SVG = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-6a3.5 3.5 0 1 0-7 0v6A3.5 3.5 0 0 0 12 15Zm6-3.5a1 1 0 1 0-2 0 4 4 0 0 1-8 0 1 1 0 1 0-2 0 6 6 0 0 0 5 5.9V20H8.5a1 1 0 1 0 0 2h7a1 1 0 1 0 0-2H13v-2.6a6 6 0 0 0 5-5.9Z"/></svg>';
   const SEND_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M20.6 3.4 3.7 10.2c-.9.4-.8 1.6.1 1.9l6.2 1.9 1.9 6.2c.3.9 1.5 1 1.9.1l6.8-16.9c.3-.7-.4-1.4-1.1-1.1Z" transform="scale(-1,1) translate(-24,0)"/></svg>';
   const TRASH_SVG = '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-3 6h12l-1 12H7L6 9Z"/></svg>';
-  function Chat({ familyId, childId, sender, senderName }) {
+  // room: 'direct' محادثة الطفل مع والديه، و'family' مجموعة الأسرة كلها (الوالدان وكل الأبناء)
+  const famSeenKey = (familyId) => 'ck-fam-seen-' + familyId;
+  const famSeen = (familyId) => localStorage.getItem(famSeenKey(familyId)) || '1970-01-01T00:00:00Z';
+  function Chat({ familyId, childId, sender, senderName, room = 'direct' }) {
+    const fam = room === 'family';
     const msgs = h('div', { class: 'msgs' });
     const input = h('input', { type: 'text', placeholder: 'اكتب رسالة…', maxlength: 1000, enterkeyhint: 'send' });
     const sendBtn = h('button', { class: 'wa-btn hidden', type: 'submit', title: 'إرسال', html: SEND_SVG });
@@ -347,16 +351,20 @@ const CK = (() => {
     const trashBtn = h('button', { class: 'wa-trash hidden', type: 'button', title: 'حذف التسجيل', html: TRASH_SVG, onclick: () => stopRec(false) });
     const recBox = h('div', { class: 'rec hidden' }, trashBtn, h('i'), recTime, recHint);
     const form = h('form', { class: 'send' }, input, recBox, micWrap, sendBtn);
-    const root = h('div', { class: 'chat' }, msgs, h('p', { class: 'chat-note' }, 'تُحذف المحادثات تلقائيًا كل يوم عند منتصف الليل'), form);
+    const root = h('div', { class: 'chat' }, msgs, h('p', { class: 'chat-note' }, (fam ? 'مجموعة يراها الوالدان وكل الأبناء · ' : '') + 'تُحذف المحادثات تلقائيًا كل يوم عند منتصف الليل'), form);
     const seen = new Map();
-    let rec = null, timer = null, hold = null, locked = false, starting = false;
+    let rec = null, timer = null, hold = null, locked = false, starting = false, myId = null;
+    const isMine = (m) => (fam ? (m.sender_id ? m.sender_id === myId : false) : m.sender === sender);
 
     function add(m, scroll = true) {
       if (seen.has(m.id)) return;
-      const mine = m.sender === sender;
+      if ((m.room || 'direct') !== room) return;
+      const mine = isMine(m);
+      const who = m.sender_name && (fam ? !mine : m.sender === 'parent') ? m.sender_name + ' · ' : '';
       const el = h('div', { class: 'bubble' + (mine ? ' me' : '') },
+        fam && !mine && m.sender_name ? h('div', { class: 'who' + (m.sender === 'parent' ? ' par' : '') }, m.sender_name) : null,
         m.kind === 'audio' ? audioPlayer(m.audio_path) : m.body,
-        h('div', { class: 'meta' }, (m.sender === 'parent' && m.sender_name ? m.sender_name + ' · ' : '') + clock(m.created_at)));
+        h('div', { class: 'meta' }, (fam ? '' : who) + clock(m.created_at)));
       seen.set(m.id, el);
       msgs.append(el);
       if (scroll) msgs.scrollTop = msgs.scrollHeight;
@@ -364,13 +372,15 @@ const CK = (() => {
     // تُستدعى عند حذف رسالة من الخادم (الحذف اليومي)
     function remove(id) { seen.get(id)?.remove(); seen.delete(id); }
     async function load() {
-      const rows = await q(sb.from('messages').select('*').eq('child_id', childId).order('created_at', { ascending: false }).limit(150));
+      myId = (await sb.auth.getSession()).data.session?.user?.id || null;
+      const base = sb.from('messages').select('*').eq('room', room);
+      const rows = await q((fam ? base.eq('family_id', familyId) : base.eq('child_id', childId)).order('created_at', { ascending: false }).limit(150));
       rows.reverse().forEach((m) => add(m, false));
       if (!rows.length) msgs.append(h('p', { class: 'muted center small', id: 'empty-chat' }, 'لا توجد رسائل بعد'));
       requestAnimationFrame(() => { msgs.scrollTop = msgs.scrollHeight; });
     }
     async function send(fields) {
-      const row = await q(sb.from('messages').insert({ family_id: familyId, child_id: childId, sender, sender_name: senderName, ...fields }).select().single());
+      const row = await q(sb.from('messages').insert({ family_id: familyId, child_id: childId || null, room, sender, sender_name: senderName, ...fields }).select().single());
       $('#empty-chat', msgs)?.remove();
       add(row);
     }
@@ -423,7 +433,7 @@ const CK = (() => {
       if (!doSend) return r.cancel();
       if (r.seconds() < 1) { r.cancel(); return toast('اضغط مطولًا على 🎤 وتحدّث، ثم ارفع إصبعك للإرسال'); }
       const blob = await r.stop();
-      if (blob.size) await run(async () => send({ kind: 'audio', audio_path: await uploadAudio(blob, familyId, childId) }));
+      if (blob.size) await run(async () => send({ kind: 'audio', audio_path: await uploadAudio(blob, familyId, childId || 'family') }));
     }
     micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
     micBtn.addEventListener('pointerdown', (e) => {
@@ -454,11 +464,25 @@ const CK = (() => {
 
     // تعليم رسائل الطرف الآخر كمقروءة
     async function markRead() {
+      if (fam) { localStorage.setItem(famSeenKey(familyId), new Date().toISOString()); return; } // المجموعة: آخر اطلاع محفوظ على الجهاز
       const other = sender === 'parent' ? 'child' : 'parent';
-      await sb.from('messages').update({ read_at: new Date().toISOString() }).eq('child_id', childId).eq('sender', other).is('read_at', null);
+      await sb.from('messages').update({ read_at: new Date().toISOString() }).eq('room', 'direct').eq('child_id', childId).eq('sender', other).is('read_at', null);
     }
     load().catch((e) => toast(errMsg(e)));
-    return { el: root, add, remove, markRead, focus: () => { msgs.scrollTop = msgs.scrollHeight; } };
+    return { el: root, room, add, remove, markRead, isMine, focus: () => { msgs.scrollTop = msgs.scrollHeight; } };
+  }
+
+  // عدد رسائل المجموعة غير المقروءة على هذا الجهاز (من غيري وبعد آخر اطلاع)
+  async function famUnread(familyId) {
+    const uid = (await sb.auth.getSession()).data.session?.user?.id;
+    const { count } = await sb.from('messages').select('id', { count: 'exact', head: true })
+      .eq('family_id', familyId).eq('room', 'family').gt('created_at', famSeen(familyId)).neq('sender_id', uid || '00000000-0000-0000-0000-000000000000');
+    return count || 0;
+  }
+  // شريط اختيار المحادثة: مع الوالدين / مجموعة الأسرة
+  function chatTabs(items, cur, onPick) {
+    return h('div', { class: 'tabs chat-tabs' }, ...items.map(([id, label, badge]) =>
+      h('button', { type: 'button', class: id === cur ? 'on' : '', onclick: () => onPick(id) }, label, badge ? h('span', { class: 'badge in' }, badge) : null)));
   }
 
   function beep() {
@@ -524,6 +548,6 @@ const CK = (() => {
     ytId, ytStart, parseTime, fmtTime, ytThumb, siteUrl, siteHost,
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
     parseUnits, splitUnits, nextPortion, words, computeState, usedToday, gate, me, fn, subscribe, debounce,
-    startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, beep, shuffle,
+    startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, famUnread, chatTabs, beep, shuffle,
   };
 })();

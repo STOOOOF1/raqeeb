@@ -6,7 +6,8 @@
   const S = {
     me: null, family: null, children: [], cur: localStorage.getItem('ck-cur'), tab: 'home', taskTab: 'main',
     d: { members: [], schedules: [], apps: [], yt: [], sites: [], tasks: [], subs: [], grants: [], breaks: [], templates: [] },
-    unread: {}, chat: null, chatChild: null, appFilter: '',
+    unread: {}, chat: null, chatChild: null, famChat: null, famUnread: 0, chatWrap: null,
+    chatRoom: localStorage.getItem('ck-chat-room') === 'family' ? 'family' : 'direct', appFilter: '',
   };
   const cur = () => S.children.find((c) => c.id === S.cur) || null;
   const mine = (rows, c = cur()) => rows.filter((r) => r.child_id === c.id);
@@ -168,7 +169,7 @@
         q(sb.from('submissions').select('*').or(`status.eq.pending,day.gte.${since}`).order('created_at', { ascending: false })),
         q(sb.from('grants').select('*').or(`status.eq.ready,ends_at.gte.${nowIso}`).order('created_at')),
         q(sb.from('break_items').select('*').order('created_at')),
-        q(sb.from('messages').select('child_id').eq('sender', 'child').is('read_at', null)),
+        q(sb.from('messages').select('child_id').eq('room', 'direct').eq('sender', 'child').is('read_at', null)),
         q(sb.from('templates').select('*').order('sort').order('created_at')),
         q(sb.from('penalties').select('*').gte('day', since).order('created_at', { ascending: false })),
       ]);
@@ -179,6 +180,7 @@
       S.d = { members, schedules, apps, yt, sites, tasks, subs, grants, breaks, templates, penalties };
       S.unread = {};
       for (const m of unread) S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
+      if (!(S.tab === 'chat' && S.chatRoom === 'family')) S.famUnread = await CK.famUnread(fam).catch(() => 0);
       render();
     } catch (e) { console.error(e); toast(CK.errMsg(e)); }
   }
@@ -227,16 +229,25 @@
 
   function onChange(p) {
     if (p.table === 'messages') {
-      if (p.eventType === 'DELETE') { if (p.old?.id) S.chat?.remove(p.old.id); return; } // الحذف اليومي للمحادثات
+      if (p.eventType === 'DELETE') { if (p.old?.id) { S.chat?.remove(p.old.id); S.famChat?.remove(p.old.id); } return; } // الحذف اليومي للمحادثات
       const m = p.new;
       if (p.eventType !== 'INSERT' || !m) return;
-      const open = S.tab === 'chat' && S.chat && m.child_id === S.chatChild;
+      if (m.room === 'family') { // مجموعة الأسرة
+        S.famChat?.add(m);
+        if (m.sender_id && m.sender_id === S.me.user_id) return;
+        if (S.tab === 'chat' && S.chatRoom === 'family' && !document.hidden) return S.famChat?.markRead();
+        S.famUnread++;
+        notify('👨‍👩‍👧 مجموعة الأسرة · ' + (m.sender_name || ''), m.kind === 'audio' ? 'رسالة صوتية 🎤' : m.body);
+        drawChrome(); if (S.tab === 'chat') drawChatTabs();
+        return;
+      }
+      const open = S.tab === 'chat' && S.chatRoom === 'direct' && S.chat && m.child_id === S.chatChild;
       if (open) { S.chat.add(m); if (m.sender === 'child') S.chat.markRead(); return; }
       if (m.sender === 'child') {
         S.unread[m.child_id] = (S.unread[m.child_id] || 0) + 1;
         const c = S.children.find((x) => x.id === m.child_id);
         notify('رسالة من ' + (c?.name || 'الطفل'), m.kind === 'audio' ? 'رسالة صوتية 🎤' : m.body);
-        drawChrome();
+        drawChrome(); if (S.tab === 'chat') drawChatTabs();
       }
       return;
     }
@@ -266,7 +277,7 @@
       h('span', { class: 'pill' }, CKTheme.icon(ic), badge ? h('span', { class: 'badge' }, badge) : null), h('b', {}, name));
     navEl.replaceChildren(h('div', { class: 'brand' }, h('i', {}, '🛡️'), 'رقيب'),
       ...TABS.map(([id, ic, name, primary]) => navBtn((primary ? '' : 'sec') + (S.tab === id ? ' on' : ''), ic, name, () => goTab(id),
-        id === 'home' ? pending : id === 'chat' ? unreadCur : 0)),
+        id === 'home' ? pending : id === 'chat' ? unreadCur + S.famUnread : 0)),
       navBtn('more' + (inMore ? ' on' : ''), 'more', 'المزيد', moreSheet));
   }
 
@@ -750,19 +761,35 @@
   }
 
   // ================= المحادثة =================
+  // تبويبان: مع الطفل المختار مباشرة، ومجموعة الأسرة التي يتحدث فيها الوالدان وكل الأبناء
+  function drawChatTabs() {
+    if (!S.chatWrap) return;
+    const c = cur();
+    S.chatWrap.firstChild.replaceWith(CK.chatTabs([['direct', '💬 ' + (c ? 'مع ' + c.name : 'مباشرة'), c ? S.unread[c.id] : 0], ['family', '👨‍👩‍👧 مجموعة الأسرة', S.famUnread]],
+      S.chatRoom, (id) => { if (id === S.chatRoom) return; S.chatRoom = id; localStorage.setItem('ck-chat-room', id); render(); }));
+  }
   function viewChat() {
     const c = cur();
-    if (!c) { S.tab = 'home'; return render(); }
-    if (!S.chat || S.chatChild !== c.id) {
-      S.chat = CK.Chat({ familyId: c.family_id, childId: c.id, sender: 'parent', senderName: S.me.name });
-      S.chatChild = c.id;
+    if (!c && S.chatRoom === 'direct') S.chatRoom = 'family';
+    S.chatWrap ||= h('div', { class: 'chat-wrap' }, h('div'), h('div', { class: 'chat-slot' }));
+    let chat;
+    if (S.chatRoom === 'family') {
+      chat = S.famChat ||= CK.Chat({ familyId: S.me.family_id, sender: 'parent', senderName: S.me.name, room: 'family' });
+      S.famUnread = 0;
+    } else {
+      if (!S.chat || S.chatChild !== c.id) {
+        S.chat = CK.Chat({ familyId: c.family_id, childId: c.id, sender: 'parent', senderName: S.me.name });
+        S.chatChild = c.id;
+      }
+      chat = S.chat;
+      S.unread[c.id] = 0;
     }
     mainEl.style.padding = '0';
-    if (mainEl.firstChild !== S.chat.el) mainEl.replaceChildren(S.chat.el);
-    S.chat.el.style.height = '100%';
-    S.chat.focus();
-    if (S.unread[c.id]) { S.unread[c.id] = 0; drawChrome(); }
-    S.chat.markRead();
+    const slot = S.chatWrap.lastChild;
+    if (slot.firstChild !== chat.el) slot.replaceChildren(chat.el);
+    if (mainEl.firstChild !== S.chatWrap) mainEl.replaceChildren(S.chatWrap);
+    drawChatTabs(); drawChrome();
+    chat.focus(); chat.markRead();
   }
 
   // ================= الأطفال والإعدادات =================
