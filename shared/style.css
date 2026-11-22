@@ -344,6 +344,25 @@ details.qbox summary { cursor: pointer; }
 .bar > i { display: block; height: 100%; border-radius: inherit; background: var(--pri); transition: width .5s var(--ease); }
 .bar > i.warn { background: var(--warn); } .bar > i.bad { background: var(--bad); }
 
+/* ================= رحلاتنا والألعاب العائلية ================= */
+.gm-head { display: flex; justify-content: space-around; align-items: center; background: var(--hero); color: #fff; border-radius: 22px; padding: 14px; box-shadow: var(--shadow); }
+.gm-letter { font-size: 3.4rem; font-weight: 900; line-height: 1.1; }
+.gm-head .gm-letter { color: #fff; }
+.gm-timer { font-size: 2rem; font-weight: 900; direction: ltr; font-variant-numeric: tabular-nums; }
+.gm-timer.near { color: #ffe08a; animation: pop .5s ease infinite alternate; }
+.gm-cat { background: var(--card); border-radius: 20px; padding: 14px; text-align: center; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px; border: 2px solid var(--pri); }
+.gm-cat-name { font-size: 2rem; font-weight: 900; color: var(--pri); }
+.gm-cat.flash { animation: pop .35s var(--ease); }
+.gm-input { font-size: 1.3rem !important; font-weight: 700; }
+.gm-mine { display: flex; flex-direction: column; gap: 6px; }
+.gm-res { border: 1.5px solid var(--line); border-radius: 14px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.gm-word { display: inline-flex; align-items: center; gap: 4px; background: var(--ok-soft); color: var(--ink); border-radius: 99px; padding: 3px 10px; font-weight: 700; font-size: .9rem; }
+.gm-word small { color: var(--ok); font-weight: 800; }
+.gm-word.no { background: var(--bad-soft); text-decoration: line-through; } .gm-word.no small { color: var(--bad); text-decoration: none; }
+.gm-x { border: 0; background: var(--card); border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-weight: 900; color: var(--bad); padding: 0; line-height: 24px; }
+.gm-word.no .gm-x { color: var(--ok); }
+.gm-score { font-size: 1.3rem; color: var(--pri); }
+
 /* ما الجديد (قسم مطوي في الإعدادات) */
 .whatsnew summary { display: flex; align-items: center; cursor: pointer; font-weight: 700; list-style: none; }
 .whatsnew summary::-webkit-details-marker { display: none; }
