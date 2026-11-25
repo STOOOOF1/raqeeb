@@ -158,17 +158,40 @@
     navEl = h('nav', { class: 'nav' });
     root.replaceChildren(h('div', { class: 'app' }, heroEl, mainEl, navEl));
     if (S.d.child) tick(true);
-    if (!offline) await reload();
+    if (!offline) await reload(true);
     CK.subscribe(onChange);
     setInterval(tick, 1000);
-    setInterval(reload, 60000);
+    setInterval(() => reload(), 60000);
     setInterval(heartbeat, 60000); heartbeat();
     setInterval(reportApps, 600000); reportApps();
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) reload(); });
-    window.addEventListener('online', reload);
+    // عودة الواجهة للأمام أو رجوع الاتصال: تحديث واحد على الأكثر كل 30 ثانية.
+    // (كانت هذه حلقة: التحميل يرسل السياسة للأندرويد فيعيد الواجهة للأمام فيُطلق visibilitychange فيُعاد التحميل… مليونا طلب يوميًا)
+    const wake = () => { if (!document.hidden && Date.now() - lastReloadAt > 30000) reload(); };
+    document.addEventListener('visibilitychange', wake);
+    window.addEventListener('online', wake);
   }
 
-  async function reload() {
+  // التحميل: لا يجري تحميلان معًا، وغير المستعجل لا يتكرر أسرع من مرة كل 3 ثوانٍ (تُدمج الطلبات المتلاحقة في واحد)
+  const RELOAD_GAP = 3000;
+  let reloading = null, reloadNext, reloadAgain = false, lastReloadAt = 0, reloadTimer = null;
+  function reload(force) {
+    if (reloading) { reloadAgain = force === true ? 'force' : (reloadAgain || true); return reloading.then(() => reloadNext); }
+    const wait = lastReloadAt + RELOAD_GAP - Date.now();
+    if (force !== true && wait > 0) {
+      if (!reloadTimer) reloadTimer = setTimeout(() => { reloadTimer = null; reload(true); }, wait);
+      return Promise.resolve();
+    }
+    clearTimeout(reloadTimer); reloadTimer = null;
+    lastReloadAt = Date.now();
+    reloading = doReload().finally(() => {
+      reloading = null;
+      const again = reloadAgain; reloadAgain = false;
+      reloadNext = again ? reload(again === 'force') : undefined;
+    });
+    return reloading;
+  }
+
+  async function doReload() {
     try {
       await flush();
       const fetchedAt = Date.now();
@@ -221,9 +244,9 @@
     localStorage.setItem('ck-main-day', day);
     if (data?.status !== 'ready' || S.d.grants.some((g) => g.id === data.id)) return; // ساعة اليوم سبق منحها
     CK.beep(); toast('🎉 أنجزت مهامك الرئيسية، كسبت ساعتك اليومية');
-    reload();
+    reload(true);
   }
-  const reloadSoon = CK.debounce(reload, 300);
+  const reloadSoon = CK.debounce(() => reload(), 300);
 
   function onChange(p) {
     if (TRIPS.onChange(p)) return; // الألعاب العائلية: تحدّث شاشتها فقط
@@ -524,7 +547,7 @@
           : m.task.config?.yt ? h('button', { class: 'btn sm', onclick: () => openMain(m.task) }, '🎬 شاهد واختبر')
           : h('button', { class: 'btn sm', onclick: () => run(async () => {
             await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: m.task.id, kind: 'main', day: today() }));
-            await reload();
+            await reload(true);
           }, 'أُرسل إشعار لوالديك') }, 'أنجزتها'))));
   }
 
@@ -533,7 +556,7 @@
     const body = openOverlay('⭐ ' + t.title);
     watchThenQuiz(body, t, () => run(async () => {
       await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: 'main', day: today() }));
-      closeOverlay(); await reload();
+      closeOverlay(); await reload(true);
     }, 'أحسنت! أُرسل إشعار لوالديك 🌟'));
   }
 
@@ -741,7 +764,7 @@
           const path = await CK.uploadAudio(blob, S.me.family_id, S.me.child_id);
           await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: t.kind, day: today(),
             audio_path: path, portion: (p.sec ? p.sec + ' — ' : '') + p.text, units_from: p.from, units_to: p.to }));
-          await reload();
+          await reload(true);
         }, 'أُرسل تسميعك لوالديك، انتظر إجازتهم 🌟');
         if (ok) closeOverlay(); else { send.disabled = false; send.textContent = '📤 إرسال لوالديّ'; }
       } }, '📤 إرسال لوالديّ');
@@ -786,7 +809,7 @@
           const path = await CK.uploadAudio(blob, S.me.family_id, S.me.child_id);
           await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: 'draw', day: today(),
             audio_path: path, portion: list.join('، '), units_from: p.from, units_to: p.to }));
-          await reload();
+          await reload(true);
         }, `أُرسل ${free ? 'رسمك' : 'ما كتبته'} لوالديك، انتظر إجازتهم 🌟`);
         if (ok) closeOverlay(); else { send.disabled = false; send.textContent = '📤 إرسال لوالديّ'; }
       } }, '📤 إرسال لوالديّ');
@@ -804,7 +827,7 @@
       h('p', { class: 'small muted' }, `بعد أن تنجزها اضغط الزر، وسيصل إشعار لوالديك ليجيزوا لك ${t.reward_min} دقيقة.`)),
     h('button', { class: 'btn big ok block', onclick: () => run(async () => {
       await q(sb.from('submissions').insert({ family_id: S.me.family_id, child_id: S.me.child_id, task_id: t.id, kind: 'chore', day: today() }));
-      await reload(); closeOverlay();
+      await reload(true); closeOverlay();
     }, 'أُبلغ والداك، انتظر إجازتهم 🌟') }, '✓ أنجزت المهمة'));
   }
 
