@@ -280,13 +280,17 @@ const CK = (() => {
   // كل تسجيل مفتوح يُحفظ هنا ليُغلق الميكروفون إذا اختفت الواجهة أو ذهب التطبيق للخلفية
   // (في آيباد/آيفون كان الميكروفون يبقى مفتوحًا إذا أُغلقت النافذة أو تُرك التطبيق أثناء التسجيل)
   const liveRecs = new Set();
-  const killAllRecs = () => { for (const r of [...liveRecs]) r.cancel(); };
+  let killGen = 0; // يزيد مع كل إغلاق، ليُلغى أي تسجيل كان ينتظر إذن الميكروفون لحظتها
+  const killAllRecs = () => { killGen++; for (const r of [...liveRecs]) r.cancel(); };
   document.addEventListener('visibilitychange', () => { if (document.hidden) killAllRecs(); });
   window.addEventListener('pagehide', killAllRecs);
   // تطبيق الأندرويد يستدعيها عند الخروج منه، لأن WebView لا يطلق visibilitychange دائمًا
   window.ckStopMic = killAllRecs;
   async function startRecording() {
+    const gen = killGen;
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // خرج من التطبيق أو أُطفئت الشاشة قبل جاهزية الميكروفون: لا تبدأ تسجيلًا في الخلفية
+    if (gen !== killGen || document.hidden) { stream.getTracks().forEach((t) => t.stop()); throw new Error('hidden'); }
     let ended = false;
     const end = () => { if (ended) return; ended = true; liveRecs.delete(handle); stream.getTracks().forEach((t) => t.stop()); };
     let rec;
