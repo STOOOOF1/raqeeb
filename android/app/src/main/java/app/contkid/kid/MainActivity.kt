@@ -99,6 +99,12 @@ class MainActivity : Activity() {
         Policy.apply(this)
     }
 
+    // خرج الطفل من التطبيق أو أُطفئت الشاشة: أغلق أي تسجيل مفتوح حتى لا يبقى الميكروفون شغالًا في الخلفية
+    override fun onStop() {
+        super.onStop()
+        if (::web.isInitialized) web.evaluateJavascript("window.ckStopMic && window.ckStopMic()", null)
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         web.saveState(outState)

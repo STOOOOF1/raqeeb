@@ -283,6 +283,8 @@ const CK = (() => {
   const killAllRecs = () => { for (const r of [...liveRecs]) r.cancel(); };
   document.addEventListener('visibilitychange', () => { if (document.hidden) killAllRecs(); });
   window.addEventListener('pagehide', killAllRecs);
+  // تطبيق الأندرويد يستدعيها عند الخروج منه، لأن WebView لا يطلق visibilitychange دائمًا
+  window.ckStopMic = killAllRecs;
   async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     let ended = false;
