@@ -277,19 +277,40 @@ const CK = (() => {
   function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
   // ---------- الصوت ----------
+  // كل تسجيل مفتوح يُحفظ هنا ليُغلق الميكروفون إذا اختفت الواجهة أو ذهب التطبيق للخلفية
+  // (في آيباد/آيفون كان الميكروفون يبقى مفتوحًا إذا أُغلقت النافذة أو تُرك التطبيق أثناء التسجيل)
+  const liveRecs = new Set();
+  const killAllRecs = () => { for (const r of [...liveRecs]) r.cancel(); };
+  document.addEventListener('visibilitychange', () => { if (document.hidden) killAllRecs(); });
+  window.addEventListener('pagehide', killAllRecs);
   async function startRecording() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
-    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    let ended = false;
+    const end = () => { if (ended) return; ended = true; liveRecs.delete(handle); stream.getTracks().forEach((t) => t.stop()); };
+    let rec;
+    try {
+      const mime = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((m) => window.MediaRecorder && MediaRecorder.isTypeSupported(m));
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    } catch (e) { stream.getTracks().forEach((t) => t.stop()); throw e; } // لا يبقى الميكروفون مفتوحًا إن فشل المسجل
     const chunks = []; const t0 = Date.now();
     rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    rec.start(500);
-    const end = () => stream.getTracks().forEach((t) => t.stop());
-    return {
+    rec.onerror = end;
+    stream.getTracks().forEach((t) => { t.onended = end; });
+    const handle = {
       seconds: () => Math.round((Date.now() - t0) / 1000),
-      stop: () => new Promise((res) => { rec.onstop = () => { end(); res(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); }; rec.stop(); }),
-      cancel: () => { rec.onstop = end; try { rec.stop(); } catch { end(); } },
+      alive: () => !ended,
+      // سفاري قد لا يطلق onstop أحيانًا: نغلق الميكروفون بعد مهلة قصيرة في كل الأحوال
+      stop: () => new Promise((res) => {
+        const done = () => { clearTimeout(guard); end(); res(new Blob(chunks, { type: rec.mimeType || 'audio/webm' })); };
+        const guard = setTimeout(done, 1500);
+        rec.onstop = done;
+        try { rec.stop(); } catch { done(); }
+      }),
+      cancel: () => { rec.onstop = null; try { if (rec.state !== 'inactive') rec.stop(); } catch { /* */ } end(); },
     };
+    try { rec.start(500); } catch (e) { end(); throw e; }
+    liveRecs.add(handle);
+    return handle;
   }
   async function uploadAudio(blob, familyId, childId) {
     // الملف نفسه يحمل التسجيلات الصوتية ورسومات الطفل (PNG) في مجلد الأسرة
@@ -321,6 +342,7 @@ const CK = (() => {
     box.append(btn);
     return box;
   }
+  const REC_MAX_SEC = 600; // حد أعلى لتسجيل التسميع والإجابات (10 دقائق) حتى لا يبقى مفتوحًا بلا نهاية
   // زر تسجيل قابل لإعادة الاستخدام: onDone(blob)
   function recordButton(onDone, label = '🎤 تسجيل') {
     let rec = null, timer = null;
@@ -329,14 +351,24 @@ const CK = (() => {
     const stop = h('button', { class: 'btn big ok grow hidden', type: 'button' }, '⏹ إنهاء');
     const cancel = h('button', { class: 'btn big plain hidden', type: 'button' }, 'إلغاء');
     const set = (on) => { for (const x of [status, stop, cancel]) x.classList.toggle('hidden', !on); start.classList.toggle('hidden', on); };
+    const wrap = h('div', { class: 'col' }, status, h('div', { class: 'row' }, start, stop, cancel));
+    const abort = () => { clearInterval(timer); set(false); const r = rec; rec = null; r?.cancel(); };
     start.onclick = async () => {
-      try { rec = await startRecording(); } catch { return toast('اسمح باستخدام الميكروفون أولًا'); }
+      if (rec) return;
+      start.disabled = true;
+      try { rec = await startRecording(); } catch { return toast('اسمح باستخدام الميكروفون أولًا'); } finally { start.disabled = false; }
+      if (!wrap.isConnected) return abort(); // أُغلقت النافذة قبل جاهزية الميكروفون
       set(true);
-      timer = setInterval(() => { status.lastChild.textContent = countdown(rec.seconds() * 1000); }, 500);
+      timer = setInterval(() => {
+        // أُغلقت النافذة أو تغيّرت الشاشة أو ذهب التطبيق للخلفية: أغلق الميكروفون
+        if (!wrap.isConnected || !rec.alive()) return abort();
+        if (rec.seconds() >= REC_MAX_SEC) { toast('انتهت المدة القصوى للتسجيل'); return stop.onclick(); }
+        status.lastChild.textContent = countdown(rec.seconds() * 1000);
+      }, 500);
     };
-    stop.onclick = async () => { clearInterval(timer); set(false); const b = await rec.stop(); rec = null; if (b.size) onDone(b); };
-    cancel.onclick = () => { clearInterval(timer); set(false); rec.cancel(); rec = null; };
-    return h('div', { class: 'col' }, status, h('div', { class: 'row' }, start, stop, cancel));
+    stop.onclick = async () => { if (!rec) return; clearInterval(timer); set(false); const r = rec; rec = null; const b = await r.stop(); if (b.size) onDone(b); };
+    cancel.onclick = abort;
+    return wrap;
   }
 
   // ---------- المحادثة ----------
@@ -421,6 +453,7 @@ const CK = (() => {
     }
     function tick() {
       if (!rec) return;
+      if (!root.isConnected || !rec.alive()) return stopRec(false); // غادر المحادثة أو ذهب التطبيق للخلفية
       const s = rec.seconds();
       recTime.textContent = countdown(s * 1000) + ' / ' + countdown(CHAT_MAX_SEC * 1000);
       recBox.classList.toggle('near', s >= CHAT_MAX_SEC - 10);
