@@ -233,9 +233,12 @@
   // بعد إنجاز المهام الرئيسية تُمنح «ساعتك اليومية» مرة واحدة في اليوم، ويبدؤها الطفل متى شاء
   let claimingMain = false;
   async function claimMainHour() {
-    // المفتاح يتغير إذا صفّر الوالد مهام اليوم، فتُطلب الساعة من جديد بعد إعادة إنجازها
-    const day = today() + '|' + (S.d.child.tasks_reset_at || '');
-    if (claimingMain || !S.st?.mainsOk || localStorage.getItem('ck-main-day') === day) return;
+    if (claimingMain || !S.st?.mainsOk) return;
+    // المفتاح يتغير إذا صفّر الوالد مهام اليوم، أو تغيّرت إنجازات المهام الرئيسية (إجازة جديدة، أو مهمة رئيسية أُضيفت)،
+    // فتُطلب الساعة من جديد. وإلا لو مُنحت الساعة ثم حذفها الوالد لما عادت بعد إجازة المهام
+    const day = today() + '|' + (S.d.child.tasks_reset_at || '') + '|'
+      + S.st.mainList.map((m) => m.task.id + ':' + (m.sub?.id || '')).sort().join(',');
+    if (localStorage.getItem('ck-main-day') === day) return;
     if (S.d.grants.some((g) => g.source === 'main' && g.day === today() && g.status === 'ready')) return localStorage.setItem('ck-main-day', day);
     claimingMain = true;
     const { data, error } = await sb.rpc('claim_main', { p_day: today() });
