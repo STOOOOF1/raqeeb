@@ -166,7 +166,8 @@ const CK = (() => {
     const capLeft = () => (c.max_daily_min ? c.max_daily_min * 60000 - usedToday(d, now) : Infinity);
     if (c.force_lock) return { ...base, reason: 'force' };
     // فترات الأرصدة النشطة: إذن الوالدين دائمًا، والمكتسب بشرط إنجاز المهام الرئيسية
-    const pa = c.paused_at ? new Date(c.paused_at).getTime() : null;
+    // الإيقاف لا يتجاوز يومه: إيقاف من يوم سابق لا أثر له (أوقاته انتهت)، وإلا جمّد كل ما يكسبه الطفل بعده
+    const pa = livePause(c, now);
     // إذن والدين أُعطي بعد الإيقاف: لا يُجمَّد مع الوقت الموقوف
     const parentAfterPause = (g) => pa != null && g.source === 'parent' && new Date(g.starts_at).getTime() >= pa;
     let onlyParent = false;
@@ -192,7 +193,8 @@ const CK = (() => {
       if (!parentNow) {
         const end = chainEnd(spans(pa), pa);
         const left = end ? Math.max(0, Math.min(end - pa, capLeft())) : 0;
-        return { ...base, reason: 'pause', left, canResume: inWindow && left > 0 };
+        // يستطيع أيضًا بدء وقت جاهز في الوقت المسموح (يُستأنف الموقوف أولًا ثم يبدأ الجديد بعده)
+        return { ...base, reason: 'pause', left, canResume: inWindow && left > 0, canStart: inWindow && capLeft() > 0 };
       }
       onlyParent = true;
     }
@@ -231,6 +233,12 @@ const CK = (() => {
       if (t0 + left < st.until) { st.until = t0 + left; st.capped = true; st.windowCut = false; st.endGrant = null; }
     }
     return st;
+  }
+  // لحظة الإيقاف المؤقت الجاري (بالملّي ثانية)، أو null إن لم يوجد أو كان من يوم سابق
+  function livePause(c, now = new Date()) {
+    if (!c || !c.paused_at) return null;
+    const pa = new Date(c.paused_at);
+    return dayStr(pa) === dayStr(now) ? pa.getTime() : null;
   }
   // دقائق الاستخدام اليوم: الجهاز يمرّر عدّاده المحلي، والوالد يقرأ آخر ما أرسله الجهاز
   function usedToday(d, now = new Date()) {
@@ -592,7 +600,7 @@ const CK = (() => {
   return {
     ytId, ytStart, parseTime, fmtTime, ytThumb, siteUrl, siteHost,
     sb, h, $, toast, run, q, modal, confirmBox, errMsg, dayStr, clock, hm, countdown, ago, WEEKDAYS, KINDS,
-    parseUnits, splitUnits, nextPortion, words, computeState, usedToday, gate, me, fn, subscribe, debounce,
+    parseUnits, splitUnits, nextPortion, words, computeState, livePause, usedToday, gate, me, fn, subscribe, debounce,
     startRecording, uploadAudio, audioUrl, removeAudio, audioPlayer, recordButton, Chat, famUnread, chatTabs, beep, shuffle,
   };
 })();
