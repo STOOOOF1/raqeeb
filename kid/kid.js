@@ -51,6 +51,7 @@
   function applyOps() {
     const raw = S.raw;
     const d = { ...raw, child: raw.child && { ...raw.child }, subs: [...raw.subs], grants: raw.grants.map((g) => ({ ...g })) };
+    if (d.child && d.child.paused_at && CK.livePause(d.child, now()) == null) d.child.paused_at = null; // إيقاف من يوم سابق: لا أثر له
     for (const op of S.ops) {
       if ((op.type === 'pause' || op.type === 'resume') && !d.child) continue;
       if (op.type === 'pause') {
@@ -222,6 +223,11 @@
       // العمليات المُرسلة قبل هذا التحميل صارت ضمن بيانات الخادم
       S.ops = S.ops.filter((o) => !(o.sentAt && o.sentAt < fetchedAt)); save('ck-ops', S.ops);
       applyOps();
+      // إيقاف معلّق من يوم سابق: يُمسح من الخادم مرة واحدة (الخادم يمسحه دون ترحيل الأوقات)
+      if (child.paused_at && !S.d.child.paused_at && S.staleCleared !== child.paused_at && !S.ops.some((o) => o.type === 'pause' && !o.sentAt)) {
+        S.staleCleared = child.paused_at;
+        pushOp({ type: 'resume', at: iso(now().getTime()) });
+      }
       if (!(S.tab === 'chat' && S.chatRoom === 'direct')) S.unread = unread.length;
       if (!(S.tab === 'chat' && S.chatRoom === 'family')) CK.famUnread(S.me.family_id).then((n) => { S.famUnread = n; drawNav(); drawChatTabs(); }, () => {});
       save('ck-kid-cache', { me: S.me, d: S.raw });
@@ -233,9 +239,12 @@
   // بعد إنجاز المهام الرئيسية تُمنح «ساعتك اليومية» مرة واحدة في اليوم، ويبدؤها الطفل متى شاء
   let claimingMain = false;
   async function claimMainHour() {
-    // المفتاح يتغير إذا صفّر الوالد مهام اليوم، فتُطلب الساعة من جديد بعد إعادة إنجازها
-    const day = today() + '|' + (S.d.child.tasks_reset_at || '');
-    if (claimingMain || !S.st?.mainsOk || localStorage.getItem('ck-main-day') === day) return;
+    if (claimingMain || !S.st?.mainsOk) return;
+    // المفتاح يتغير إذا صفّر الوالد مهام اليوم، أو تغيّرت إنجازات المهام الرئيسية (إجازة جديدة، أو مهمة رئيسية أُضيفت)،
+    // فتُطلب الساعة من جديد. وإلا لو مُنحت الساعة ثم حذفها الوالد لما عادت بعد إجازة المهام
+    const day = today() + '|' + (S.d.child.tasks_reset_at || '') + '|'
+      + S.st.mainList.map((m) => m.task.id + ':' + (m.sub?.id || '')).sort().join(',');
+    if (localStorage.getItem('ck-main-day') === day) return;
     if (S.d.grants.some((g) => g.source === 'main' && g.day === today() && g.status === 'ready')) return localStorage.setItem('ck-main-day', day);
     claimingMain = true;
     const { data, error } = await sb.rpc('claim_main', { p_day: today() });
@@ -569,6 +578,7 @@
       st.mainsOk && st.inWindow ? h('p', { class: 'small muted' }, 'ابدأ ما تشاء منها، وكل وقت يبدأ بعد انتهاء الذي قبله.') : null,
       st.ready.map((g) => h('div', { class: 'item' }, h('span', { class: 'grow' }, (g.source === 'main' ? '⭐ ' : '') + (g.title || 'وقت إضافي')),
         h('button', { class: 'btn', disabled: !st.mainsOk || !st.canStart, onclick: () => {
+          if (st.reason === 'pause') pushOp({ type: 'resume', at: iso(now().getTime()) }); // الوقت الجديد لا يبدأ والوقت موقوف
           const s = nextStart();
           pushOp({ type: 'start', grant: g.id, start: iso(s), end: iso(s + g.minutes * 60000) });
           toast('بدأ وقتك، استمتع!');
